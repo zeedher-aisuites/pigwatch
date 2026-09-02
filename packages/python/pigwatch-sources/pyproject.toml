@@ -1,0 +1,13 @@
+[project]
+name = "pigwatch-sources"
+version = "0.1.0"
+description = "Stable source interfaces for PigWatch adapters"
+requires-python = ">=3.12"
+dependencies = ["pigwatch-schemas"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pigwatch_sources"]

@@ -1,5 +1,86 @@
 # PigWatch
 
-AI-first livestock health monitoring platform.
+PigWatch is a simulation-first livestock health monitoring platform. It is designed to detect and communicate physiological and behavioral anomalies; it is not an autonomous veterinary diagnostic system.
 
-PigWatch is being developed simulation-first to combine computer vision, thermal sensing, animal tracking, sensor fusion, anomaly detection, historical analysis, and real-time alerts for livestock health monitoring.
+This repository currently contains the **M0 engineering foundation only**. Product telemetry, sensor simulation, computer-vision pipelines, anomaly detection, alerts, and hardware integrations belong to later milestones.
+
+## Repository layout
+
+```text
+apps/dashboard/          React + TypeScript operator dashboard shell
+services/api/            FastAPI service and health endpoints
+packages/python/         Shared Python schemas, source contracts, and package seams
+infra/                   Local infrastructure configuration
+tests/                   Cross-package Python tests
+docs/                    Product, architecture, ADR, specification, and plan records
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for system boundaries and [AGENTS.md](AGENTS.md) for repository working rules.
+
+## Prerequisites
+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/)
+- Node.js 22.23.2 (see `.nvmrc`)
+- npm 12.0.2 (pinned by `packageManager` and verified in CI/Docker)
+- Docker with Docker Compose (optional for local infrastructure)
+
+## First-time setup
+
+Select the pinned Node version and install the pinned npm version before installing dependencies. With `nvm`:
+
+```bash
+nvm use
+npm install --global npm@12.0.2
+```
+
+Then install from the repository lockfiles:
+
+```bash
+uv sync --all-packages --dev --locked
+npm ci
+```
+
+Compose has non-secret, loopback-only defaults so configuration, image builds, and isolated smoke tests work from a clean checkout. For regular or shared development, copy `.env.example` to `.env` and replace every placeholder before starting Docker services. `.env` is ignored by Git.
+
+## Development commands
+
+Run the API:
+
+```bash
+uv run --package pigwatch-api uvicorn pigwatch_api.main:app --reload
+```
+
+Run the dashboard:
+
+```bash
+npm run dev --workspace @pigwatch/dashboard
+```
+
+Run validation:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy services packages tests
+uv run pytest
+npm run check
+```
+
+Run the local stack after configuring `.env`:
+
+```bash
+docker compose up --build
+```
+
+The dashboard is served at `http://localhost:5173`; API health endpoints are at `http://localhost:8000/health/live` and `/health/ready`.
+
+The initial Digital Farm is planned for M4 as a browser feature built with React, TypeScript, Three.js, and React Three Fiber. No 3D engine dependency or rendering behavior is included in M0.
+
+## Product guardrail
+
+PigWatch outputs must be framed as observations, anomaly indications, and decision support. They must not claim that the system independently diagnoses disease or replaces a veterinarian.
+
+## Roadmap
+
+M0 establishes tooling and boundaries. The next milestone, M1, is the telemetry core. The current milestone sequence lives in [docs/product/roadmap.md](docs/product/roadmap.md).

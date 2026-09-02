@@ -1,0 +1,17 @@
+[project]
+name = "pigwatch-api"
+version = "0.1.0"
+description = "HTTP API boundary for PigWatch"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pigwatch-schemas",
+  "uvicorn[standard]>=0.32,<1",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pigwatch_api"]
