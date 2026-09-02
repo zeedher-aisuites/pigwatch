@@ -4,7 +4,10 @@
 
 PigWatch collects livestock observations, detects physiological, environmental, and behavioral anomalies, and presents decision support to farm operators and veterinary professionals. It does not independently diagnose disease or prescribe treatment. Clinical language must preserve uncertainty, show supporting evidence, and direct users to qualified veterinary judgment.
 
-M0 establishes boundaries and development tooling. It intentionally contains no telemetry processing, sensor behavior, vision pipeline, Digital Farm rendering, anomaly engine, alerting, prediction, or veterinary retrieval behavior.
+M0 established boundaries and development tooling. M1 adds typed observation transport,
+validation, MQTT ingestion, PostgreSQL persistence and minimal retrieval. It intentionally contains
+no sensor behavior, simulation ground truth ingestion, vision pipeline, Digital Farm rendering,
+anomaly engine, alerting, prediction or veterinary retrieval behavior.
 
 ## System boundary and architecture style
 
@@ -19,12 +22,12 @@ PigWatch begins as a modular monolith in a monorepo. Clear package and service s
 | Component | Responsibility | M0 location |
 | --- | --- | --- |
 | Dashboard | React/TypeScript operator shell; dashboard and browser Digital Farm arrive in M3/M4 | `apps/dashboard` |
-| API | FastAPI HTTP boundary and infrastructure health probes | `services/api` |
+| API | FastAPI health/retrieval boundary and in-process telemetry worker | `services/api` |
 | Shared schemas | Versioned, transport-neutral vocabulary and provenance | `packages/python/pigwatch-schemas` |
 | Source contracts | Lifecycle shared by source adapters without universal acquisition semantics | `packages/python/pigwatch-sources` |
 | Simulation | Future deterministic scenarios, synthetic sources, and evaluation support | `packages/python/pigwatch-simulation` |
 | Vision | Future camera ingestion and computer-vision boundary | `packages/python/pigwatch-vision` |
-| Telemetry | Future MQTT ingestion, normalization, and persistence beginning in M1 | architecture boundary only in M0 |
+| Telemetry | MQTT publishing/ingestion, validation, normalization and PostgreSQL persistence | `packages/python/pigwatch-telemetry` |
 | Local infrastructure | PostgreSQL, MQTT, and containerized development configuration | `compose.yaml`, `infra` |
 
 ## Preferred data flow
@@ -74,13 +77,36 @@ These dimensions can combine: a synthetic scenario can be delivered live or repl
 
 ## Telemetry and event-driven concepts
 
-M1 will define the telemetry envelope and MQTT topic taxonomy. MQTT is the preferred decoupled, near-real-time transport; Pydantic validates versioned boundary data; PostgreSQL stores normalized observations and derived metadata. Events are expected to carry an event identifier, schema version, source and optional animal identifiers, event and ingest times, source origin and delivery, units, and quality metadata.
+M1 defines a strict version `1.0` observation envelope with UUIDv7 identity, independent origin and
+delivery provenance, UTC event/ingest times, typed scalar fixture payloads, explicit units, and
+optional quality/trace metadata. The producer sends `ingest_time: null`; PigWatch assigns the
+authoritative acceptance time. Simulation ground truth has no observation payload, topic, table or
+API.
 
-Consumers should be designed to tolerate duplicates and support idempotent handling. End-to-end at-least-once delivery is an M1 design target, not an M0 guarantee. Establishing an actual guarantee requires M1 decisions on stable event identifiers, MQTT QoS, publisher retry or outbox behavior, broker persistence and sessions, consumer acknowledgements, deduplication transaction scope, and the retention window. Topic, dead-letter, ordering, and schema-evolution rules also remain M1 decisions.
+Observation topics use
+`pigwatch/v1/observations/{scope_kind}/{scope_id}/{source_id}/{category}`. MQTT v5 QoS 1,
+persistent broker storage and a 24-hour consumer session support redelivery. The consumer manually
+ACKs only after PostgreSQL commits an acceptance or rejection. UUID primary-key idempotency collapses
+matching duplicates and records conflicting content explicitly.
+
+The broker-to-database path is at-least-once within configured persistence/session limits. M1 does
+not claim unconditional producer-to-database at-least-once delivery because it has no durable
+producer outbox. Exact semantics are normative in
+[`docs/specs/m1-telemetry-core.md`](docs/specs/m1-telemetry-core.md) and proposed for approval in
+[ADR-0005](docs/adr/0005-telemetry-contract-delivery-and-storage.md).
 
 ## Persistence concepts
 
-PostgreSQL is the primary transactional and historical store, with schemas and indexing designed to remain compatible with time-series workloads. Raw observations, normalized records, inferred state, model versions, provenance, and processing outcomes remain traceable. High-volume media should live in appropriate object/file storage and be referenced by metadata rather than stored as large relational blobs. Retention, partitioning, time-series extensions, backup, and disaster recovery are deliberately undecided in M0.
+PostgreSQL is the primary transactional and historical store. Alembic creates an `observations`
+table keyed by event ID and a `telemetry_rejections` evidence table. Accepted rows retain exact
+bounded MQTT bytes alongside normalized query columns. Indexes support event ID, source/time,
+payload/time and ingest-time access. Late and future-skew flags preserve evidence without rewriting
+timestamps. Retention, partitioning, time-series extensions, production access control, backup and
+disaster recovery remain undecided.
+
+The API process is live independently of dependencies. It is ready only when PostgreSQL answers a
+probe and the MQTT worker is connected. Broker and database loss are visible in JSON logs and
+readiness without terminating the process.
 
 ## Deterministic analytics and LLM boundary
 
