@@ -1,6 +1,6 @@
 # ADR-0001: Monorepo and baseline tooling
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-02
 - Owners: PigWatch maintainers
 

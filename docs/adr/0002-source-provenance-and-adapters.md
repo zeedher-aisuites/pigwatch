@@ -1,6 +1,6 @@
 # ADR-0002: Source provenance and adapter boundaries
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-02
 - Owners: PigWatch maintainers
 

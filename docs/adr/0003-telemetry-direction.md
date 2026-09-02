@@ -1,6 +1,6 @@
 # ADR-0003: Telemetry transport and persistence direction
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-02
 - Owners: PigWatch maintainers
 
