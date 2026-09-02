@@ -1,0 +1,22 @@
+{
+  "event_id": "019941c8-3800-7000-8000-000000000004",
+  "schema_version": "1.0",
+  "source": {
+    "source_id": "fixture-physical-recorded",
+    "origin": "PHYSICAL",
+    "delivery": "RECORDED"
+  },
+  "event_time": "2026-09-02T10:00:00-05:00",
+  "ingest_time": null,
+  "payload_type": "environment.temperature",
+  "payload": {
+    "value": 22.25,
+    "unit": "Cel"
+  },
+  "quality": {
+    "status": "BAD",
+    "confidence": 0.25,
+    "flags": ["test-only"]
+  },
+  "trace": null
+}

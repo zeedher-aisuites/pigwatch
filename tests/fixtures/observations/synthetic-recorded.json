@@ -1,0 +1,25 @@
+{
+  "event_id": "019941c8-3800-7000-8000-000000000002",
+  "schema_version": "1.0",
+  "source": {
+    "source_id": "fixture-synthetic-recorded",
+    "origin": "SYNTHETIC",
+    "delivery": "RECORDED"
+  },
+  "event_time": "2026-09-02T11:30:00Z",
+  "ingest_time": null,
+  "payload_type": "environment.relative_humidity",
+  "payload": {
+    "value": 64.0,
+    "unit": "%"
+  },
+  "quality": {
+    "status": "UNCERTAIN",
+    "confidence": 0.75,
+    "flags": ["recorded-fixture"]
+  },
+  "trace": {
+    "correlation_id": "019941c8-3800-7000-8000-000000000012",
+    "trace_id": "7f3f55a4443f48e48a63723c23c1276f"
+  }
+}
