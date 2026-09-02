@@ -19,9 +19,9 @@ The M0 Python protocol is `pigwatch_sources.AsyncSource`. It is a structural con
 
 The milestone that first uses a capability defines its sample schema and extends the common lifecycle as needed:
 
-- camera: M4;
-- RFID: M7;
-- thermal: M8;
+- camera: M5;
+- RFID: M8;
+- thermal: M9;
 - environmental sensors: M2 for synthetic semantics, refined with real adapters in M17.
 
 Implementations with expected names include `VideoFileSource`, `WebcamSource`, `RTSPSource`, and synthetic/live hardware adapters. Names do not replace explicit provenance.

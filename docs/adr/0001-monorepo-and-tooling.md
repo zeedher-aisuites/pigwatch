@@ -10,9 +10,9 @@ PigWatch will evolve several tightly related services, shared contracts, simulat
 
 ## Decision
 
-Use one repository with explicit `apps`, `services`, `packages`, `simulators`, `infra`, `tests`, and `docs` boundaries. Use Python 3.12+, uv workspaces, FastAPI/Pydantic, Ruff, mypy, and pytest for Python. Use an npm workspace with React, TypeScript, Vite, and Vitest for the dashboard. Use Docker Compose for local PostgreSQL and MQTT dependencies. GitHub Actions runs deterministic checks from lockfiles.
+Use one repository with explicit `apps`, `services`, `packages`, `infra`, `tests`, and `docs` boundaries. Keep early runtime code as a modular monolith with separately runnable entry points only where they provide a clear development or operational boundary. Use Python 3.12+, uv workspaces, FastAPI/Pydantic, Ruff, mypy, and pytest for Python. Use an npm workspace with React, TypeScript, Vite, and Vitest for the dashboard. Use Docker Compose for local PostgreSQL and MQTT dependencies. GitHub Actions runs deterministic checks from lockfiles.
 
-OpenCV, PyTorch, and Godot are deferred until the milestone that exercises them.
+OpenCV and PyTorch are deferred until a computer-vision milestone requires them. Three.js and React Three Fiber are deferred to M4. Godot and Unreal Engine are not roadmap dependencies and require a future decision if browser constraints justify reconsideration.
 
 ## Consequences
 

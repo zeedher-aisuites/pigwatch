@@ -6,11 +6,11 @@
 
 <!-- What is explicitly included and excluded? -->
 
-## Affected components
+## Components/files affected
 
 <!-- API, dashboard, schemas, sources, simulation, vision, infrastructure, docs, other -->
 
-## Tests run
+## Tests executed
 
 <!-- Include exact commands and results. -->
 
@@ -26,9 +26,13 @@
 
 <!-- Link a known-limitations document where appropriate. -->
 
-## Architecture changes
+## Architectural changes
 
 <!-- Link ADRs/architecture docs, or state "None". -->
+
+## Security/configuration changes
+
+<!-- Describe secret, permission, dependency, or configuration effects, or state "None". -->
 
 ## Follow-up work
 

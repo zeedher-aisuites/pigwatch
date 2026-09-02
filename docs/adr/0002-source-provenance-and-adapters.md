@@ -12,7 +12,7 @@ PigWatch must support synthetic inputs, recorded replays, and live hardware with
 
 Every source declares `SIMULATED`, `RECORDED`, or `LIVE` provenance. Downstream components depend on capability-specific source interfaces rather than concrete device or simulation implementations. M0 defines only a small asynchronous lifecycle protocol and provenance vocabulary; payload contracts arrive with their owning milestones.
 
-Simulation ground truth and sensor-observed state use separate contracts and channels. They may be correlated for evaluation but are never implicitly substituted.
+Simulation ground truth, PigWatch observations, and PigWatch inferred state use separate contracts and storage semantics. They may be correlated for evaluation but are never implicitly substituted.
 
 ## Consequences
 

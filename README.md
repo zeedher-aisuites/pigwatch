@@ -10,7 +10,6 @@ This repository currently contains the **M0 engineering foundation only**. Produ
 apps/dashboard/          React + TypeScript operator dashboard shell
 services/api/            FastAPI service and health endpoints
 packages/python/         Shared Python schemas, source contracts, and package seams
-simulators/godot/        Reserved boundary for the future Godot digital farm
 infra/                   Local infrastructure configuration
 tests/                   Cross-package Python tests
 docs/                    Product, architecture, ADR, specification, and plan records
@@ -65,6 +64,8 @@ docker compose up --build
 ```
 
 The dashboard is served at `http://localhost:5173`; API health endpoints are at `http://localhost:8000/health/live` and `/health/ready`.
+
+The initial Digital Farm is planned for M4 as a browser feature built with React, TypeScript, Three.js, and React Three Fiber. No 3D engine dependency or rendering behavior is included in M0.
 
 ## Product guardrail
 
