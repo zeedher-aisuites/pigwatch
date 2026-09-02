@@ -31,7 +31,7 @@ uv sync --all-packages --dev
 npm ci
 ```
 
-Copy `.env.example` to `.env` and replace every placeholder before starting Docker services. `.env` is ignored by Git.
+Compose has non-secret, loopback-only defaults so configuration, image builds, and isolated smoke tests work from a clean checkout. For regular or shared development, copy `.env.example` to `.env` and replace every placeholder before starting Docker services. `.env` is ignored by Git.
 
 ## Development commands
 

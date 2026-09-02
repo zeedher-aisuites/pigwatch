@@ -3,10 +3,12 @@ name: pigwatch
 services:
   postgres:
     image: postgres:16-alpine
+    # Non-secret, loopback-only defaults keep clean-checkout builds and smoke tests usable.
+    # Override them through .env before using any shared development environment.
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
-      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-pigwatch}
+      POSTGRES_USER: ${POSTGRES_USER:-pigwatch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pigwatch-local-only}
     ports:
       - "${PIGWATCH_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
