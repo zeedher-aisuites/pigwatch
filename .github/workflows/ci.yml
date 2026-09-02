@@ -24,6 +24,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          version: "0.12.1"
       - name: Install workspace
         run: uv sync --all-packages --dev --locked
       - name: Lint
@@ -42,15 +43,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.23.2"
           cache: npm
+      - name: Install pinned npm
+        run: npm install --global npm@12.0.2
+      - name: Verify Node and npm versions
+        run: |
+          test "$(node --version)" = "v22.23.2"
+          test "$(npm --version)" = "12.0.2"
       - name: Install workspace
         run: npm ci
       - name: Type check, test, and build
         run: npm run check
 
-  compose:
-    name: Compose configuration
+  containers:
+    name: Container configuration and builds
     runs-on: ubuntu-latest
     env:
       POSTGRES_DB: pigwatch_ci
@@ -60,3 +67,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate Compose model
         run: docker compose config --quiet
+      - name: Build M0 application images from a clean cache
+        run: docker compose build --no-cache api dashboard

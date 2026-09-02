@@ -1,3 +1,3 @@
 # pigwatch-sources
 
-Structural interfaces for simulated, recorded, and live source adapters. Capability-specific payloads and contracts are introduced by their owning milestones.
+A static structural lifecycle interface for source adapters. M0 defines descriptor, open, and close only; capability milestones own acquisition and payload contracts.

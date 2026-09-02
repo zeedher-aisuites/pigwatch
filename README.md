@@ -21,13 +21,23 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for system boundaries and [AGENTS.md](AGE
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
-- Node.js 22+ and npm
+- Node.js 22.23.2 (see `.nvmrc`)
+- npm 12.0.2 (pinned by `packageManager` and verified in CI/Docker)
 - Docker with Docker Compose (optional for local infrastructure)
 
 ## First-time setup
 
+Select the pinned Node version and install the pinned npm version before installing dependencies. With `nvm`:
+
 ```bash
-uv sync --all-packages --dev
+nvm use
+npm install --global npm@12.0.2
+```
+
+Then install from the repository lockfiles:
+
+```bash
+uv sync --all-packages --dev --locked
 npm ci
 ```
 
@@ -73,4 +83,4 @@ PigWatch outputs must be framed as observations, anomaly indications, and decisi
 
 ## Roadmap
 
-M0 establishes tooling and boundaries. The next milestone, M1, is the telemetry core. The complete milestone sequence and exit criteria live in [docs/product/roadmap.md](docs/product/roadmap.md).
+M0 establishes tooling and boundaries. The next milestone, M1, is the telemetry core. The current milestone sequence lives in [docs/product/roadmap.md](docs/product/roadmap.md).

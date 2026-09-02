@@ -9,7 +9,7 @@ Build PigWatch as simulation-first livestock-health decision support. Report obs
 - Read this file, `ARCHITECTURE.md`, and the relevant feature specification and ADRs.
 - Inspect existing interfaces before adding new ones; avoid changing public/shared contracts unnecessarily.
 - Work on a task branch/worktree, keep the milestone boundary explicit, and inspect the working tree for user-owned changes.
-- Preserve explicit `SIMULATED`, `RECORDED`, and `LIVE` provenance and keep simulation ground truth, observations, and inferred state separate.
+- Preserve orthogonal source origin (`SYNTHETIC`/`PHYSICAL`) and delivery (`LIVE`/`RECORDED`) provenance, and keep simulation ground truth, observations, and inferred state separate.
 
 ## Allowed without additional approval
 
@@ -26,7 +26,7 @@ Do not hide unfinished work behind `TODO` or `FIXME`. Document significant unres
 ## Core commands
 
 ```bash
-uv sync --all-packages --dev
+uv sync --all-packages --dev --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy services packages tests

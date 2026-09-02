@@ -1,4 +1,7 @@
-FROM node:22-alpine AS build
+FROM node:22.23.2-alpine AS build
+
+RUN npm install --global npm@12.0.2 \
+    && test "$(npm --version)" = "12.0.2"
 
 WORKDIR /workspace
 

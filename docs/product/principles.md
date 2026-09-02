@@ -12,7 +12,7 @@ PigWatch is decision support. It does not independently diagnose veterinary dise
 
 1. **Simulation-first:** real hardware replaces adapters; it must not require major backend rewrites.
 2. **Stable contracts:** shared schemas and interfaces evolve deliberately and compatibly.
-3. **Explicit provenance:** every observation preserves its source and declares `SIMULATED`, `RECORDED`, or `LIVE`.
+3. **Explicit provenance:** every observation preserves independent `SYNTHETIC`/`PHYSICAL` origin and `LIVE`/`RECORDED` delivery; replay never erases synthetic origin.
 4. **State separation:** simulation ground truth, PigWatch observations, and PigWatch inferred state are distinct.
 5. **Reproducibility:** synthetic scenarios should support deterministic, seeded execution.
 6. **Testability:** components and adapters are independently testable against their contracts.

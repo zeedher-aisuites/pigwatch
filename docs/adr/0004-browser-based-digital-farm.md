@@ -1,6 +1,6 @@
 # ADR-0004: Browser-based Digital Farm
 
-- Status: Accepted
+- Status: Proposed
 - Date: 2026-09-02
 - Owners: PigWatch maintainers
 

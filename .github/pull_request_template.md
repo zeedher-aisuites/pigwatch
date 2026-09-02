@@ -42,5 +42,5 @@
 
 - [ ] User-facing health language describes observations/anomalies and does not claim autonomous diagnosis.
 - [ ] No secrets, credentials, private data, or production configuration are committed.
-- [ ] Simulated, recorded, and live data preserve explicit provenance.
+- [ ] Synthetic/physical origin and live/recorded delivery preserve explicit provenance independently.
 - [ ] Tests and documentation are updated for the change.

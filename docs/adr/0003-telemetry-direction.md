@@ -1,6 +1,6 @@
 # ADR-0003: Telemetry transport and persistence direction
 
-- Status: Accepted
+- Status: Proposed
 - Date: 2026-09-02
 - Owners: PigWatch maintainers
 
@@ -10,13 +10,15 @@ Future sensor sources and consumers need decoupled transport, validation, replay
 
 ## Decision
 
-Use MQTT as the near-real-time observation transport, Pydantic for versioned boundary validation, and PostgreSQL for normalized historical state and metadata. Treat delivery as at least once and design consumers for idempotency, late data, and out-of-order data. Store large media outside relational rows and reference it through metadata.
+Use MQTT as the near-real-time observation transport, Pydantic for versioned boundary validation, and PostgreSQL for normalized historical state and metadata. Design consumers to tolerate duplicates and support idempotent handling. End-to-end at-least-once delivery is an M1 design target, not an M0 guarantee.
+
+M1 must decide stable event identifiers, MQTT QoS, publisher retry or outbox behavior, broker persistence and session behavior, consumer acknowledgement semantics, deduplication transaction scope, and retention windows before claiming a delivery guarantee. Store large media outside relational rows and reference it through metadata.
 
 Operational telemetry—logs, metrics, and traces—is separate from livestock observation telemetry.
 
 ## Consequences
 
-Local development requires MQTT and PostgreSQL, supplied by Docker Compose. M1 must define identifiers, topic taxonomy, QoS, retention, schema evolution, and failure semantics before application producers and consumers are added.
+Local development requires MQTT and PostgreSQL, supplied by Docker Compose. Duplicate tolerance is an architectural constraint, while the actual delivery guarantee remains open. M1 must define identifiers, topic taxonomy, QoS, retention, schema evolution, and failure semantics before application producers and consumers are added.
 
 ## Alternatives considered
 

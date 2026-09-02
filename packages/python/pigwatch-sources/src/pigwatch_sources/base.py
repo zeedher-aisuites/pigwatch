@@ -1,15 +1,12 @@
-"""Common lifecycle contract for asynchronous sources."""
+"""Common lifecycle contract for sources."""
 
-from typing import Protocol, TypeVar, runtime_checkable
+from typing import Protocol
 
 from pigwatch_schemas import SourceDescriptor
 
-SampleT_co = TypeVar("SampleT_co", covariant=True)
 
-
-@runtime_checkable
-class AsyncSource(Protocol[SampleT_co]):
-    """Minimal contract shared by simulated, recorded, and live sources."""
+class SourceLifecycle(Protocol):
+    """Lifecycle shared by sources without prescribing acquisition semantics."""
 
     @property
     def descriptor(self) -> SourceDescriptor:
@@ -17,11 +14,7 @@ class AsyncSource(Protocol[SampleT_co]):
         ...
 
     async def open(self) -> None:
-        """Acquire resources needed to read samples."""
-        ...
-
-    async def read(self) -> SampleT_co:
-        """Return the next capability-specific sample."""
+        """Acquire resources required by the source."""
         ...
 
     async def close(self) -> None:

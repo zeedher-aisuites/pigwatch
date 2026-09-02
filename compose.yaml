@@ -23,8 +23,8 @@ services:
   mqtt:
     image: eclipse-mosquitto:2
     ports:
-      - "${PIGWATCH_BIND_ADDRESS:-127.0.0.1}:${MQTT_PORT:-1883}:1883"
-      - "${PIGWATCH_BIND_ADDRESS:-127.0.0.1}:${MQTT_WEBSOCKET_PORT:-9001}:9001"
+      - "127.0.0.1:${MQTT_PORT:-1883}:1883"
+      - "127.0.0.1:${MQTT_WEBSOCKET_PORT:-9001}:9001"
     volumes:
       - ./infra/mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     healthcheck:
