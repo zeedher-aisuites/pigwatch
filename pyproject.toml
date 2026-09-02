@@ -10,6 +10,7 @@ dev = [
   "httpx>=0.27,<1",
   "mypy>=1.13,<2",
   "pytest>=8.3,<10",
+  "pytest-asyncio>=0.24,<2",
   "ruff>=0.8,<1",
 ]
 
@@ -25,10 +26,14 @@ members = [
 [tool.uv.sources]
 pigwatch-schemas = { workspace = true }
 pigwatch-sources = { workspace = true }
+pigwatch-telemetry = { workspace = true }
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
 testpaths = ["tests", "services/api/tests"]
+markers = [
+  "integration: requires PostgreSQL and MQTT services",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -44,6 +49,7 @@ known-first-party = [
   "pigwatch_schemas",
   "pigwatch_simulation",
   "pigwatch_sources",
+  "pigwatch_telemetry",
   "pigwatch_vision",
 ]
 
@@ -61,5 +67,6 @@ mypy_path = [
   "packages/python/pigwatch-schemas/src",
   "packages/python/pigwatch-sources/src",
   "packages/python/pigwatch-simulation/src",
+  "packages/python/pigwatch-telemetry/src",
   "packages/python/pigwatch-vision/src",
 ]

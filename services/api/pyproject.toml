@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "HTTP API boundary for PigWatch"
 requires-python = ">=3.12"
 dependencies = [
+  "alembic>=1.14,<2",
   "fastapi>=0.115,<1",
   "pigwatch-schemas",
+  "pigwatch-telemetry",
   "uvicorn[standard]>=0.32,<1",
 ]
 
