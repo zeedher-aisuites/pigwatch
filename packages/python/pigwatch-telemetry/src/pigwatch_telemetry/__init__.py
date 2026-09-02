@@ -1,6 +1,6 @@
 """PigWatch M1 telemetry contracts, transport, ingestion and persistence."""
 
-from pigwatch_telemetry.ingestion import TelemetryProcessor
+from pigwatch_telemetry.ingestion import TelemetryProcessor, canonical_observation_fingerprint
 from pigwatch_telemetry.logging import JsonLogFormatter, configure_structured_logging
 from pigwatch_telemetry.models import (
     BrokerUnavailable,
@@ -10,6 +10,7 @@ from pigwatch_telemetry.models import (
     ProcessingStatus,
     RejectionCode,
     RejectionEvidence,
+    ShutdownTimeout,
     StoredObservation,
     TelemetryValidationError,
 )
@@ -53,10 +54,12 @@ __all__ = [
     "RejectionCode",
     "RejectionEvidence",
     "ScopeKind",
+    "ShutdownTimeout",
     "StoredObservation",
     "TelemetryProcessor",
     "TelemetryValidationError",
     "TopicRoute",
+    "canonical_observation_fingerprint",
     "configure_structured_logging",
     "decode_observation",
     "metadata",

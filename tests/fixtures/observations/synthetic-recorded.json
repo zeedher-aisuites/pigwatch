@@ -7,6 +7,7 @@
     "delivery": "RECORDED"
   },
   "event_time": "2026-09-02T11:30:00Z",
+  "replay_time": "2026-09-02T15:30:00Z",
   "ingest_time": null,
   "payload_type": "environment.relative_humidity",
   "payload": {

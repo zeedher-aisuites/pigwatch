@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
@@ -55,6 +56,7 @@ observations = Table(
     Column("source_origin", String(16), nullable=False),
     Column("source_delivery", String(16), nullable=False),
     Column("event_time", DateTime(timezone=True), nullable=False),
+    Column("replay_time", DateTime(timezone=True), nullable=True),
     Column("ingest_time", DateTime(timezone=True), nullable=False),
     Column("payload_type", String(64), nullable=False),
     Column("value", Float, nullable=False),
@@ -76,6 +78,11 @@ observations = Table(
     CheckConstraint(
         "source_delivery IN ('LIVE', 'RECORDED')",
         name="ck_observations_source_delivery",
+    ),
+    CheckConstraint(
+        "(source_delivery = 'RECORDED' AND replay_time IS NOT NULL) OR "
+        "(source_delivery = 'LIVE' AND replay_time IS NULL)",
+        name="ck_observations_replay_time",
     ),
     CheckConstraint(
         "processing_outcome = 'ACCEPTED'",
@@ -151,6 +158,7 @@ def _row_to_stored(row: RowMapping) -> StoredObservation:
                 "delivery": row["source_delivery"],
             },
             "event_time": row["event_time"],
+            "replay_time": row["replay_time"],
             "ingest_time": row["ingest_time"],
             "payload_type": row["payload_type"],
             "payload": row["payload"],
@@ -188,6 +196,7 @@ class PostgresObservationRepository:
             "source_origin": envelope.source.origin.value,
             "source_delivery": envelope.source.delivery.value,
             "event_time": envelope.event_time,
+            "replay_time": envelope.replay_time,
             "ingest_time": envelope.ingest_time,
             "payload_type": envelope.payload_type.value,
             "value": envelope.payload.value,
@@ -230,9 +239,12 @@ class PostgresObservationRepository:
                         topic=observation.topic,
                         event_id_text=str(envelope.event_id),
                         error_code=RejectionCode.EVENT_ID_CONFLICT.value,
-                        error_detail="event_id already exists with different canonical content",
+                        error_detail=(
+                            "event_id already exists with a different canonical envelope "
+                            "or normalized topic"
+                        ),
                         raw_message=observation.raw_message,
-                        raw_sha256=observation.fingerprint,
+                        raw_sha256=hashlib.sha256(observation.raw_message).hexdigest(),
                         raw_truncated=False,
                     )
                 )

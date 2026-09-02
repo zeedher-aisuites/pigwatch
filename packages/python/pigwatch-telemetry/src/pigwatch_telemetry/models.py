@@ -13,6 +13,15 @@ from pigwatch_schemas import ObservationEnvelopeV1
 
 MAX_MESSAGE_BYTES = 65_536
 LATE_THRESHOLD_SECONDS = 300
+MAX_TOPIC_CHARS = 512
+MAX_EVENT_ID_TEXT_CHARS = 128
+MAX_ERROR_DETAIL_CHARS = 512
+
+
+def sanitize_diagnostic_text(value: str, *, max_chars: int) -> str:
+    """Bound diagnostic text and replace database/log-hostile code points deterministically."""
+
+    return "".join(character if character.isprintable() else "�" for character in value[:max_chars])
 
 
 class RejectionCode(StrEnum):
@@ -20,6 +29,7 @@ class RejectionCode(StrEnum):
 
     MESSAGE_TOO_LARGE = "MESSAGE_TOO_LARGE"
     MALFORMED_JSON = "MALFORMED_JSON"
+    DUPLICATE_JSON_KEY = "DUPLICATE_JSON_KEY"
     STRUCTURALLY_INVALID = "STRUCTURALLY_INVALID"
     MISSING_EVENT_ID = "MISSING_EVENT_ID"
     INVALID_EVENT_ID = "INVALID_EVENT_ID"
@@ -80,6 +90,32 @@ class RejectionEvidence:
     raw_sha256: str
     raw_truncated: bool
 
+    def __post_init__(self) -> None:
+        """Make deterministic invalid input safe for bounded PostgreSQL columns."""
+
+        object.__setattr__(
+            self,
+            "topic",
+            sanitize_diagnostic_text(self.topic, max_chars=MAX_TOPIC_CHARS),
+        )
+        if self.event_id_text is not None:
+            object.__setattr__(
+                self,
+                "event_id_text",
+                sanitize_diagnostic_text(
+                    self.event_id_text,
+                    max_chars=MAX_EVENT_ID_TEXT_CHARS,
+                ),
+            )
+        object.__setattr__(
+            self,
+            "detail",
+            sanitize_diagnostic_text(self.detail, max_chars=MAX_ERROR_DETAIL_CHARS),
+        )
+        if len(self.raw_message) > MAX_MESSAGE_BYTES:
+            object.__setattr__(self, "raw_message", self.raw_message[:MAX_MESSAGE_BYTES])
+            object.__setattr__(self, "raw_truncated", True)
+
 
 class StoredObservation(BaseModel):
     """Retrieval representation for one accepted durable observation."""
@@ -103,10 +139,15 @@ class TelemetryValidationError(ValueError):
         *,
         event_id_text: str | None = None,
     ) -> None:
-        super().__init__(detail)
+        safe_detail = sanitize_diagnostic_text(detail, max_chars=MAX_ERROR_DETAIL_CHARS)
+        super().__init__(safe_detail)
         self.code = code
-        self.detail = detail[:512]
-        self.event_id_text = event_id_text
+        self.detail = safe_detail
+        self.event_id_text = (
+            sanitize_diagnostic_text(event_id_text, max_chars=MAX_EVENT_ID_TEXT_CHARS)
+            if event_id_text is not None
+            else None
+        )
 
 
 class PersistenceUnavailable(RuntimeError):
@@ -115,3 +156,7 @@ class PersistenceUnavailable(RuntimeError):
 
 class BrokerUnavailable(RuntimeError):
     """Raised when MQTT publication cannot receive broker acknowledgement."""
+
+
+class ShutdownTimeout(RuntimeError):
+    """Raised when ingestion processing cannot settle before its shutdown deadline."""

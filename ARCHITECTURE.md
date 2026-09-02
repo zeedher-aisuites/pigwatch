@@ -78,20 +78,24 @@ These dimensions can combine: a synthetic scenario can be delivered live or repl
 ## Telemetry and event-driven concepts
 
 M1 defines a strict version `1.0` observation envelope with UUIDv7 identity, independent origin and
-delivery provenance, UTC event/ingest times, typed scalar fixture payloads, explicit units, and
-optional quality/trace metadata. The producer sends `ingest_time: null`; PigWatch assigns the
-authoritative acceptance time. Simulation ground truth has no observation payload, topic, table or
-API.
+delivery provenance, UTC event/replay/ingest times, typed scalar fixture payloads, explicit units,
+and optional quality/trace metadata. Recorded delivery requires `replay_time`; live delivery
+forbids it. The producer sends `ingest_time: null`; PigWatch assigns the authoritative acceptance
+time. Simulation ground truth has no observation payload, topic, table or API.
 
 Observation topics use
 `pigwatch/v1/observations/{scope_kind}/{scope_id}/{source_id}/{category}`. MQTT v5 QoS 1,
 persistent broker storage and a 24-hour consumer session support redelivery. The consumer manually
-ACKs only after PostgreSQL commits an acceptance or rejection. UUID primary-key idempotency collapses
-matching duplicates and records conflicting content explicitly.
+ACKs only after PostgreSQL commits an acceptance or rejection. UUID primary-key idempotency
+collapses duplicates only when both canonical content and normalized routing topic match; changed
+content or routing is an explicit event-ID conflict.
 
-The broker-to-database path is at-least-once within configured persistence/session limits. M1 does
-not claim unconditional producer-to-database at-least-once delivery because it has no durable
-producer outbox. Exact semantics are normative in
+The broker-to-database at-least-once path begins only after the persistent QoS 1 consumer
+subscription receives a successful SUBACK and remains subject to configured persistence, session
+and storage limits. A fresh broker may PUBACK a publication made before that subscription exists
+without retaining it for the later consumer. M1 therefore does not claim unconditional
+producer-to-database durability: producers have no durable outbox and must gate operational startup
+on API readiness. Exact semantics are normative in
 [`docs/specs/m1-telemetry-core.md`](docs/specs/m1-telemetry-core.md) and proposed for approval in
 [ADR-0005](docs/adr/0005-telemetry-contract-delivery-and-storage.md).
 
@@ -105,8 +109,11 @@ timestamps. Retention, partitioning, time-series extensions, production access c
 disaster recovery remain undecided.
 
 The API process is live independently of dependencies. It is ready only when PostgreSQL answers a
-probe and the MQTT worker is connected. Broker and database loss are visible in JSON logs and
-readiness without terminating the process.
+probe, the MQTT worker is connected, its intended subscription has a successful SUBACK, and the
+bounded ingestion capacity is not saturated. MQTT Receive Maximum and an application semaphore
+bound in-flight deliveries and concurrent PostgreSQL work. Shutdown stops new work and awaits
+processing cleanup within a finite deadline before repository disposal. Broker and database loss
+are visible in JSON logs and readiness without terminating the process.
 
 ## Deterministic analytics and LLM boundary
 

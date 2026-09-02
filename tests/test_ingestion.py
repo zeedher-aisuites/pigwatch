@@ -48,6 +48,7 @@ async def test_synthetic_recorded_provenance_survives_normalization() -> None:
     assert stored.envelope.source.origin.value == "SYNTHETIC"
     assert stored.envelope.source.delivery.value == "RECORDED"
     assert stored.envelope.event_time == envelope.event_time
+    assert stored.envelope.replay_time == envelope.replay_time
     assert stored.envelope.ingest_time == INGEST_TIME
     assert stored.is_late is True
 
@@ -69,6 +70,29 @@ async def test_duplicate_is_idempotent_and_conflicting_content_rejects() -> None
 
     assert first.status is ProcessingStatus.ACCEPTED
     assert duplicate.status is ProcessingStatus.DUPLICATE
+    assert conflict.status is ProcessingStatus.REJECTED
+    assert conflict.rejection_code is RejectionCode.EVENT_ID_CONFLICT
+    assert len(repository.observations) == 1
+
+
+@pytest.mark.asyncio
+async def test_same_event_and_content_on_different_normalized_route_is_conflict() -> None:
+    repository = MemoryObservationRepository()
+    processor = TelemetryProcessor(repository, clock=lambda: INGEST_TIME)
+    envelope = load_observation_fixture("synthetic-live")
+    first_route = route_for(envelope)
+    different_route = TopicRoute(
+        scope_kind=ScopeKind.SITE,
+        scope_id="different-site",
+        source_id=envelope.source.source_id,
+        category=first_route.category,
+    )
+    raw = serialize_observation(envelope)
+
+    first = await processor.process(first_route.topic(), raw)
+    conflict = await processor.process(different_route.topic(), raw)
+
+    assert first.status is ProcessingStatus.ACCEPTED
     assert conflict.status is ProcessingStatus.REJECTED
     assert conflict.rejection_code is RejectionCode.EVENT_ID_CONFLICT
     assert len(repository.observations) == 1

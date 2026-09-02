@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +16,7 @@ from pigwatch_telemetry import (
     RejectionCode,
     RejectionEvidence,
     StoredObservation,
+    canonical_observation_fingerprint,
 )
 
 FIXTURE_DIRECTORY = Path(__file__).parent / "fixtures" / "observations"
@@ -122,7 +122,7 @@ def normalized_for_test(envelope: ObservationEnvelopeV1, topic: str) -> Normaliz
         envelope=envelope,
         topic=topic,
         raw_message=raw,
-        fingerprint=hashlib.sha256(raw).hexdigest(),
+        fingerprint=canonical_observation_fingerprint(topic=topic, envelope_bytes=raw),
         is_late=False,
         clock_skew_detected=False,
     )

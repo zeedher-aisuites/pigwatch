@@ -6,6 +6,7 @@ import asyncio
 import os
 import subprocess
 from collections.abc import Callable, Coroutine
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from pigwatch_telemetry import (
     MqttTelemetryPublisher,
     ObservationCategory,
     PostgresObservationRepository,
+    ProcessingResult,
     RejectionCode,
     ScopeKind,
     TelemetryProcessor,
@@ -30,6 +32,38 @@ from pigwatch_telemetry import (
 from tests.support import load_observation_fixture
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
+
+
+class HoldUntilCancelledProcessor:
+    """Keep a real broker delivery unacknowledged until worker shutdown."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def process(self, topic: str, payload: bytes) -> ProcessingResult:
+        del topic, payload
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unacknowledged integration gate unexpectedly released")
+
+
+class BoundedDelegatingProcessor:
+    """Hold real persistence while recording the worker's active concurrency."""
+
+    def __init__(self, inner: TelemetryProcessor) -> None:
+        self.inner = inner
+        self.release = asyncio.Event()
+        self.active = 0
+        self.maximum_active = 0
+
+    async def process(self, topic: str, payload: bytes) -> ProcessingResult:
+        self.active += 1
+        self.maximum_active = max(self.maximum_active, self.active)
+        try:
+            await self.release.wait()
+            return await self.inner.process(topic, payload)
+        finally:
+            self.active -= 1
 
 
 def route_for(envelope: ObservationEnvelopeV1) -> TopicRoute:
@@ -79,7 +113,7 @@ async def start_path(
     )
     await worker.start()
     await publisher.start()
-    assert await worker.wait_until_connected(10)
+    assert await worker.wait_until_ready(10)
     assert await publisher.wait_until_connected(10)
     return worker, publisher
 
@@ -152,6 +186,12 @@ async def test_all_provenance_combinations_round_trip_and_duplicate_is_idempoten
             ("PHYSICAL", "LIVE"),
             ("PHYSICAL", "RECORDED"),
         ]
+        synthetic_recorded = stored[1]
+        assert synthetic_recorded is not None
+        assert synthetic_recorded.envelope.event_time == envelopes[1].event_time
+        assert synthetic_recorded.envelope.replay_time == envelopes[1].replay_time
+        assert synthetic_recorded.envelope.ingest_time is not None
+        assert synthetic_recorded.envelope.replay_time != synthetic_recorded.envelope.ingest_time
         assert await postgres_repository.count(replay.event_id) == 1
     finally:
         await publisher.close()
@@ -181,11 +221,23 @@ async def test_invalid_message_is_recorded_and_consumer_continues(
         await asyncio.to_thread(publish_raw, mqtt_settings, route_for(envelope).topic(), b"{")
         await wait_until(lambda: _has_rejection(postgres_repository, RejectionCode.MALFORMED_JSON))
 
+        duplicate_keys = serialize_with_duplicate_payload_value(envelope)
+        await asyncio.to_thread(
+            publish_raw,
+            mqtt_settings,
+            route_for(envelope).topic(),
+            duplicate_keys,
+        )
+        await wait_until(
+            lambda: _has_rejection(postgres_repository, RejectionCode.DUPLICATE_JSON_KEY)
+        )
+
         await publisher.publish(route_for(envelope), envelope)
         await wait_until(lambda: _is_persisted(postgres_repository, envelope.event_id))
 
-        assert worker.is_connected
+        assert worker.is_ready
         assert await postgres_repository.rejection_count(RejectionCode.MALFORMED_JSON) == 1
+        assert await postgres_repository.rejection_count(RejectionCode.DUPLICATE_JSON_KEY) == 1
     finally:
         await publisher.close()
         await worker.close()
@@ -200,6 +252,12 @@ async def _has_rejection(
 
 async def _is_persisted(repository: PostgresObservationRepository, event_id: Any) -> bool:
     return await repository.get(event_id) is not None
+
+
+def serialize_with_duplicate_payload_value(envelope: ObservationEnvelopeV1) -> bytes:
+    raw = envelope.model_dump_json().encode()
+    needle = f'"value":{envelope.payload.value}'
+    return raw.decode().replace(needle, f'{needle},"value":99.0', 1).encode()
 
 
 @pytest.mark.integration
@@ -221,7 +279,7 @@ async def test_persistent_session_delivers_message_after_consumer_restart(
     envelope = load_observation_fixture("physical-recorded")
     await first_worker.start()
     await publisher.start()
-    assert await first_worker.wait_until_connected(10)
+    assert await first_worker.wait_until_ready(10)
     assert await publisher.wait_until_connected(10)
     await first_worker.close()
 
@@ -236,12 +294,115 @@ async def test_persistent_session_delivers_message_after_consumer_restart(
     )
     try:
         await second_worker.start()
-        assert await second_worker.wait_until_connected(10)
+        assert await second_worker.wait_until_ready(10)
         await wait_until(lambda: _is_persisted(postgres_repository, envelope.event_id))
         assert await postgres_repository.count(envelope.event_id) == 1
     finally:
         await second_worker.close()
         await publisher.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_unacknowledged_delivery_is_redelivered_after_consumer_restart(
+    postgres_repository: PostgresObservationRepository,
+    mqtt_settings: MqttConnectionSettings,
+) -> None:
+    consumer_id = f"integration-unacked-restart-{uuid4()}"
+    holding_processor = HoldUntilCancelledProcessor()
+    first_worker = MqttIngestionWorker(
+        mqtt_settings,
+        holding_processor,
+        client_id=consumer_id,
+    )
+    publisher = MqttTelemetryPublisher(
+        mqtt_settings,
+        client_id=f"integration-publisher-{uuid4()}",
+    )
+    envelope = load_observation_fixture("synthetic-recorded").model_copy(
+        update={"event_id": new_event_id()}
+    )
+    await first_worker.start()
+    await publisher.start()
+    assert await first_worker.wait_until_ready(10)
+    assert await publisher.wait_until_connected(10)
+
+    await publisher.publish(route_for(envelope), envelope)
+    await holding_processor.started.wait()
+    assert first_worker.pending_count == 1
+    await first_worker.close()
+    assert await postgres_repository.get(envelope.event_id) is None
+
+    second_worker = MqttIngestionWorker(
+        mqtt_settings,
+        TelemetryProcessor(postgres_repository),
+        client_id=consumer_id,
+    )
+    try:
+        await second_worker.start()
+        assert await second_worker.wait_until_ready(10)
+        await wait_until(lambda: _is_persisted(postgres_repository, envelope.event_id))
+        assert await postgres_repository.count(envelope.event_id) == 1
+    finally:
+        await second_worker.close()
+        await publisher.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_broker_burst_respects_receive_and_processing_bounds(
+    postgres_repository: PostgresObservationRepository,
+    mqtt_settings: MqttConnectionSettings,
+) -> None:
+    bounded_settings = replace(
+        mqtt_settings,
+        receive_maximum=6,
+        processing_concurrency=2,
+    )
+    processor = BoundedDelegatingProcessor(TelemetryProcessor(postgres_repository))
+    worker = MqttIngestionWorker(
+        bounded_settings,
+        processor,
+        client_id=f"integration-bounded-{uuid4()}",
+    )
+    publisher = MqttTelemetryPublisher(
+        bounded_settings,
+        client_id=f"integration-bounded-publisher-{uuid4()}",
+    )
+    base = load_observation_fixture("synthetic-live")
+    envelopes = [base.model_copy(update={"event_id": new_event_id()}) for _ in range(8)]
+    await worker.start()
+    await publisher.start()
+    assert await worker.wait_until_ready(10)
+    assert await publisher.wait_until_connected(10)
+    try:
+        for envelope in envelopes:
+            await publisher.publish(route_for(envelope), envelope)
+
+        await wait_until(
+            lambda: (
+                worker.pending_count == bounded_settings.receive_maximum
+                and worker.active_count == bounded_settings.processing_concurrency
+            )
+        )
+        assert worker.pending_count <= bounded_settings.receive_maximum
+        assert processor.maximum_active == bounded_settings.processing_concurrency
+        assert worker.is_saturated
+        assert not worker.is_ready
+
+        processor.release.set()
+        await wait_until(
+            lambda: _all_persisted(
+                postgres_repository,
+                [envelope.event_id for envelope in envelopes],
+            )
+        )
+        await wait_until(lambda: worker.is_ready)
+        assert processor.maximum_active == bounded_settings.processing_concurrency
+    finally:
+        processor.release.set()
+        await publisher.close()
+        await worker.close()
 
 
 @pytest.mark.integration
@@ -263,7 +424,7 @@ async def test_broker_restart_reconnects_and_processing_recovers(
     try:
         await asyncio.to_thread(compose, "restart", "mqtt")
         await wait_until(
-            lambda: worker.connection_count > worker_connections and worker.is_connected,
+            lambda: worker.connection_count > worker_connections and worker.is_ready,
             timeout=30,
         )
         await wait_until(

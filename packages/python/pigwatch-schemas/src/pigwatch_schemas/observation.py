@@ -21,7 +21,7 @@ from pydantic import (
     model_validator,
 )
 
-from pigwatch_schemas.source import SourceDescriptor
+from pigwatch_schemas.source import SourceDelivery, SourceDescriptor
 
 SCHEMA_VERSION_V1: Final[Literal["1.0"]] = "1.0"
 
@@ -118,13 +118,14 @@ class ObservationEnvelopeV1(BaseModel):
     schema_version: Literal["1.0"]
     source: SourceDescriptor
     event_time: AwareDatetime
+    replay_time: AwareDatetime | None = None
     ingest_time: AwareDatetime | None
     payload_type: PayloadType
     payload: ObservationPayload
     quality: QualityMetadata | None
     trace: TraceMetadata | None
 
-    @field_validator("event_time", "ingest_time")
+    @field_validator("event_time", "replay_time", "ingest_time")
     @classmethod
     def normalize_timestamp(cls, value: datetime | None) -> datetime | None:
         """Normalize accepted aware timestamps to UTC without changing their instant."""
@@ -135,7 +136,12 @@ class ObservationEnvelopeV1(BaseModel):
 
     @model_validator(mode="after")
     def validate_payload_discriminator(self) -> ObservationEnvelopeV1:
-        """Require the top-level discriminator to match the typed payload."""
+        """Require delivery timing and the payload discriminator to be coherent."""
+
+        if self.source.delivery is SourceDelivery.RECORDED and self.replay_time is None:
+            raise ValueError("recorded delivery requires replay_time")
+        if self.source.delivery is SourceDelivery.LIVE and self.replay_time is not None:
+            raise ValueError("live delivery requires replay_time to be null")
 
         expected_type: dict[PayloadType, type[BaseModel]] = {
             PayloadType.ENVIRONMENT_TEMPERATURE: TemperaturePayload,

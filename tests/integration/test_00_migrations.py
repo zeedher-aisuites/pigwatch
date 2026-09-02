@@ -24,6 +24,18 @@ async def table_names(database_url: str) -> set[str]:
     return result
 
 
+async def observation_column_names(database_url: str) -> set[str]:
+    engine = create_async_engine(database_url)
+
+    def inspect_columns(connection: Connection) -> set[str]:
+        return {str(column["name"]) for column in inspect(connection).get_columns("observations")}
+
+    async with engine.connect() as connection:
+        result = await connection.run_sync(inspect_columns)
+    await engine.dispose()
+    return result
+
+
 @pytest.mark.integration
 def test_migration_upgrades_fresh_database_and_matches_metadata(
     integration_database_url: str,
@@ -40,4 +52,5 @@ def test_migration_upgrades_fresh_database_and_matches_metadata(
     assert {"alembic_version", "observations", "telemetry_rejections"}.issubset(
         asyncio.run(table_names(integration_database_url))
     )
+    assert "replay_time" in asyncio.run(observation_column_names(integration_database_url))
     command.check(config)

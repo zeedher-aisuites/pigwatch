@@ -39,10 +39,14 @@ The scalar payloads are static contract fixtures. They do not implement M2 senso
 - **Observation:** what a source reports. It is neither simulation ground truth nor inferred state.
 - **Wire envelope:** the producer-created MQTT document. Its required `ingest_time` is `null`.
 - **Accepted envelope:** the validated envelope after PigWatch assigns `ingest_time` in UTC.
+- **Replay time:** when recorded evidence was replayed into the telemetry path; it is distinct from
+  both original occurrence and PigWatch acceptance.
 - **Raw evidence:** the exact received MQTT bytes, bounded to 64 KiB.
 - **Normalized observation:** validated columns and typed JSON derived without unit conversion.
-- **Duplicate:** the same event ID and canonical content received more than once.
-- **Identity conflict:** the same event ID received with different canonical content.
+- **Duplicate:** the same event ID, canonical envelope and normalized MQTT topic received more than
+  once.
+- **Identity conflict:** the same event ID received with a different canonical envelope or
+  normalized MQTT topic.
 - **Late:** accepted more than five minutes after `event_time`.
 - **Out of order:** arrival order differs from event-time order. This is valid and is not rewritten.
 
@@ -60,6 +64,7 @@ Schema version `1.0` has this transport shape:
     "delivery": "RECORDED"
   },
   "event_time": "2026-09-02T12:00:00Z",
+  "replay_time": "2026-09-02T15:30:00Z",
   "ingest_time": null,
   "payload_type": "environment.temperature",
   "payload": {
@@ -84,7 +89,9 @@ compact separators, so the same model has deterministic bytes.
 
 The producer must explicitly send `ingest_time: null`. Ingestion rejects producer-assigned ingest
 times and stamps the accepted model immediately before persistence. This prevents a producer from
-claiming when PigWatch accepted evidence.
+claiming when PigWatch accepted evidence. `RECORDED` delivery requires a timezone-aware
+`replay_time`; `LIVE` delivery requires it to be absent or `null`. Serialization emits the field as
+`null` for live evidence so the canonical shape remains deterministic.
 
 ## Payload model
 
@@ -108,7 +115,8 @@ not numbers. Arbitrary dictionaries and unknown payload types are rejected.
 
 The dimensions remain independent through serialization, topic validation, normalization,
 persistence and retrieval. Recording or replay changes delivery, never origin. In particular,
-`SYNTHETIC` + `RECORDED` must round-trip unchanged.
+`SYNTHETIC` + `RECORDED` must round-trip unchanged with its original `event_time`, explicit
+`replay_time` and independently assigned `ingest_time`.
 
 No observation field represents simulation ground truth. Ground truth has no M1 ingestion topic,
 payload type, table or API.
@@ -120,16 +128,19 @@ random component, distributed uniqueness and time-sortable identifiers without d
 solely from the timestamp. A producer creates the ID once before publication and reuses the same
 envelope and ID for every retry or replay of that event.
 
-PostgreSQL uses `event_id` as the observation primary key. A SHA-256 fingerprint of canonical wire
-content distinguishes a legitimate redelivery from conflicting content that reuses an ID.
+PostgreSQL uses `event_id` as the observation primary key. A SHA-256 fingerprint of the normalized
+topic plus canonical wire envelope distinguishes a legitimate redelivery from conflicting content
+or routing scope that reuses an ID. This canonical fingerprint is not the forensic raw-message
+SHA-256; the two hashes have distinct purposes.
 
 ## Time semantics
 
 - `event_time` is when the source observed the value.
+- `replay_time` is when recorded evidence entered replay; it is required only for `RECORDED`.
 - `ingest_time` is when PigWatch accepted the message for processing.
 
-Both persisted values are timezone-aware and normalized to UTC. Naive or malformed timestamps are
-rejected. Arrival order never changes `event_time`.
+All present timestamps are timezone-aware and normalized to UTC. Naive or malformed timestamps are
+rejected. Arrival order never changes `event_time`, and neither replay nor ingestion overloads it.
 
 An event older than five minutes at ingestion is accepted with `is_late=true`. There is no M1
 maximum age because legitimate offline farms and recorded sources can be delayed. An event more
@@ -195,8 +206,9 @@ pigwatch/v1/observations/global/all/fixture-environment-3/ammonia-concentration
 ```
 
 The consumer subscribes to `pigwatch/v1/observations/+/+/+/+`. Source ID and category in the topic
-must match the envelope. Location scope remains routing metadata in M1; a future location contract
-may add independently validated envelope metadata without changing the topic depth.
+must match the envelope. Location scope is meaningful routing evidence: the parsed route is
+re-rendered to a normalized topic and participates in duplicate equivalence. A future location
+contract may add independently validated envelope metadata without changing the topic depth.
 
 Control, ground-truth, health and dead-letter data must not use observation topics.
 
@@ -207,6 +219,11 @@ Control, ground-truth, health and dead-letter data must not use observation topi
   preserving the exact event ID and payload bytes.
 - Mosquitto persistence and a named data volume are enabled for local M1 validation.
 - Ingestion uses a stable client ID, a 24-hour persistent session and manual acknowledgement.
+- Connection is not readiness. The consumer tracks the matching successful QoS 1 SUBACK and only
+  then exposes telemetry readiness. Every reconnect re-establishes and confirms the subscription.
+- The MQTT v5 CONNECT receive maximum bounds broker deliveries awaiting acknowledgement. A smaller
+  application processing semaphore bounds concurrent PostgreSQL work; saturation degrades
+  readiness and is logged.
 - A valid message is acknowledged only after the PostgreSQL transaction commits.
 - An invalid message is acknowledged only after its rejection record commits.
 - A database failure leaves the message unacknowledged. Each persistence attempt has a 10-second
@@ -216,17 +233,23 @@ Control, ground-truth, health and dead-letter data must not use observation topi
 - Disconnects change connection state, fail readiness and trigger Paho's bounded reconnect delay.
 - Consumer restart with the same client ID resumes the broker session while it remains within the
   expiry period. Database idempotency makes redelivery safe.
+- Graceful shutdown stops scheduling work, gives near-complete processing a bounded grace period,
+  cancels remaining tasks, awaits their cleanup to a finite deadline and only then permits the
+  repository to close. Unacknowledged work remains eligible for broker redelivery.
 
 ### Actual guarantee
 
-From broker acceptance through durable PostgreSQL processing, the M1 consumer path is at-least-once
-within the broker's persistent-session and retained-storage limits. Duplicates are expected and are
-collapsed transactionally.
+The M1 broker-to-PostgreSQL at-least-once boundary begins only after the intended persistent
+consumer subscription has received a successful SUBACK. Within that established subscription,
+broker persistence, session expiry and storage limits still apply, and duplicates are collapsed
+transactionally. A fresh broker can PUBACK a publication before any subscription exists; that
+message is not queued for a future subscriber and is outside the guarantee.
 
 M1 does **not** claim unconditional end-to-end at-least-once delivery from producer creation. There
 is no durable producer outbox, so a producer crash before PUBACK or retry exhaustion can lose an
 event. Broker disk loss, session expiry and PostgreSQL data loss are also outside the guarantee.
-This precise limitation is preferable to overstating reliability.
+Operational producers must wait for API readiness, which includes successful SUBACK, before they
+assume durable ingestion is available. PUBACK alone is not proof of a subscriber or database path.
 
 ## Ingestion and normalization
 
@@ -235,6 +258,7 @@ The processing sequence is:
 ```text
 MQTT bytes
   -> size and UTF-8/JSON decoding
+  -> recursive duplicate-key detection
   -> schema-version dispatch
   -> structural Pydantic validation
   -> topic/envelope semantic validation
@@ -256,10 +280,10 @@ Migration `0001_m1_telemetry_core` creates:
 
 - UUIDv7 `event_id` primary key;
 - schema version, source ID, origin and delivery;
-- event and ingest timestamps;
+- event, optional replay and ingest timestamps;
 - payload type, numeric value, unit and typed payload JSON;
 - optional quality and trace JSON;
-- MQTT topic, exact raw message bytes and SHA-256 fingerprint;
+- normalized MQTT topic, exact raw message bytes and canonical envelope/topic fingerprint;
 - `is_late`, `clock_skew_detected` and processing outcome.
 
 Indexes support source plus event time, payload type plus event time and ingest time. Check
@@ -291,12 +315,14 @@ retention and deletion policy must be designed before deployment. Local M1 data 
 The observation primary key defines deduplication scope across all sources and time:
 
 - first valid occurrence inserts one observation;
-- same ID plus same canonical fingerprint returns `DUPLICATE` without another row;
-- same ID plus different content creates an `EVENT_ID_CONFLICT` rejection and leaves the accepted
-  row unchanged.
+- same ID, canonical envelope and normalized topic returns `DUPLICATE` without another row;
+- same ID with different canonical content or normalized topic creates an `EVENT_ID_CONFLICT`
+  rejection and leaves the accepted row unchanged.
 
 Insertion and conflict inspection occur in a PostgreSQL transaction. Duplicate MQTT delivery can
-therefore never create duplicate durable observations.
+therefore never create duplicate durable observations. Global event-ID uniqueness does not change.
+Conflict evidence stores SHA-256 of the exact raw MQTT bytes, never the canonical comparison
+fingerprint.
 
 ## Late and out-of-order policy
 
@@ -310,6 +336,7 @@ The consumer remains alive for malformed or semantically invalid messages. Rejec
 codes including:
 
 - `MESSAGE_TOO_LARGE`, `MALFORMED_JSON`, `STRUCTURALLY_INVALID`;
+- `DUPLICATE_JSON_KEY` for duplicate keys at any JSON object depth;
 - `MISSING_EVENT_ID`, `INVALID_EVENT_ID`;
 - `MISSING_SCHEMA_VERSION`, `UNSUPPORTED_SCHEMA_VERSION`;
 - `MISSING_PROVENANCE`, `INVALID_ORIGIN`, `INVALID_DELIVERY`;
@@ -317,16 +344,19 @@ codes including:
 - `UNKNOWN_PAYLOAD_TYPE`, `INVALID_VALUE`, `INVALID_UNIT`;
 - `TOPIC_MISMATCH` and `EVENT_ID_CONFLICT`.
 
-No missing value, unit, provenance or timestamp is fabricated. Diagnostic detail is bounded and
-does not include the raw body. If PostgreSQL is unavailable, neither acceptance nor rejection is
-acknowledged until persistence succeeds.
+No missing value, unit, provenance or timestamp is fabricated. Topic, event-ID text, diagnostic
+detail and other database text are deterministically sanitized of non-printable characters and
+bounded before insertion. Rejection evidence retains bounded raw bytes plus SHA-256 of the complete
+raw message. Deterministic invalid input therefore commits once and is ACKed; dependency/persistence
+outages remain unacknowledged and retry.
 
 ## Reconnect and restart behavior
 
-The publisher and consumer expose connection state. Initial broker unavailability does not kill the
-API process. The Paho network loop reconnects with delays from one through thirty seconds. Pending
-consumer work is cancelled cleanly on shutdown; messages not acknowledged are eligible for broker
-redelivery. Database failures retry in process and remain visible in readiness/logs.
+The publisher and consumer expose connection and subscription state. Initial broker unavailability
+does not kill the API process. The Paho network loop reconnects with delays from one through thirty
+seconds, and readiness returns only after a successful SUBACK. Shutdown is bounded and awaits task
+cleanup before repository disposal; messages not acknowledged are eligible for broker redelivery.
+Database failures retry in process and remain visible in readiness/logs.
 
 ## Query and retrieval
 
@@ -342,9 +372,12 @@ aggregations, charts or dashboard changes.
 ## Health and observability
 
 - `GET /health/live` reports only that the API process is running.
-- `GET /health/ready` checks `SELECT 1` against PostgreSQL and the MQTT consumer connection state;
-  it returns HTTP 503 until both are ready.
+- `GET /health/ready` checks `SELECT 1`, successful MQTT connection plus SUBACK, and ingestion
+  saturation; it returns HTTP 503 until useful ingestion capacity is ready.
 - Dependency loss does not terminate the process.
+
+The Compose API health check uses readiness rather than liveness. Services that publish at startup
+must depend on that ready state; they must not treat broker PUBACK as subscriber readiness.
 
 Telemetry logs are single-line JSON with timestamp, level, event, and safe context such as event
 ID, source ID, topic, outcome, rejection code and broker state. Database and broker failures are
@@ -371,16 +404,20 @@ retention and multi-tenant isolation remain future security work.
 M1 is acceptable when automated tests and a local Compose smoke test demonstrate:
 
 1. version `1.0` validates and unknown versions reject explicitly;
-2. all four origin/delivery combinations survive serialization, MQTT, storage and retrieval;
+2. all four origin/delivery combinations survive serialization, MQTT, storage and retrieval, with
+   recorded evidence preserving event, replay and ingest times independently;
 3. a valid observation completes publisher -> MQTT -> ingestion -> PostgreSQL -> query;
 4. duplicate ID/content creates exactly one accepted row;
-5. conflicting content for one ID rejects without overwriting evidence;
+5. conflicting content or normalized routing scope for one ID rejects without overwriting evidence;
 6. late and out-of-order events preserve both timestamps and flags;
 7. malformed, incomplete, ambiguous-unit and unsupported messages reject without killing ingestion;
 8. broker/database unavailability affects readiness and recovery behavior is tested;
-9. consumer restart and MQTT reconnect behavior are covered;
+9. pre-SUBACK publication loss, post-SUBACK delivery, consumer restart with unacknowledged work and
+   MQTT reconnect behavior are covered;
 10. a fresh PostgreSQL database migrates successfully;
 11. logs expose safe processing context;
 12. Docker images, Compose, Python, frontend and integration CI checks pass;
-13. no M2 sensor generator, dashboard product feature or LLM dependency exists; and
-14. the working tree is clean after the review-ready commit.
+13. recursive duplicate JSON keys and pathological rejection metadata reject durably;
+14. bounded processing concurrency and graceful shutdown are demonstrated;
+15. no M2 sensor generator, dashboard product feature or LLM dependency exists; and
+16. the working tree is clean after the review-ready commit.

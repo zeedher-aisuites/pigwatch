@@ -22,6 +22,19 @@ from pigwatch_telemetry.models import (
 )
 
 
+class _DuplicateJsonKeyError(ValueError):
+    """Internal sentinel raised by recursive JSON object construction."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonKeyError
+        result[key] = value
+    return result
+
+
 def _event_id_text(data: dict[str, Any]) -> str | None:
     value = data.get("event_id")
     return value if isinstance(value, str) else None
@@ -75,6 +88,20 @@ def _prevalidate(data: dict[str, Any]) -> str | None:
             event_id_text=event_id_text,
         )
 
+    replay_time_present = "replay_time" in data and data["replay_time"] is not None
+    if source["delivery"] == SourceDelivery.RECORDED.value and not replay_time_present:
+        raise TelemetryValidationError(
+            RejectionCode.MISSING_TIMESTAMP,
+            "recorded delivery requires replay_time",
+            event_id_text=event_id_text,
+        )
+    if source["delivery"] == SourceDelivery.LIVE.value and replay_time_present:
+        raise TelemetryValidationError(
+            RejectionCode.INVALID_TIMESTAMP,
+            "live delivery requires replay_time to be null",
+            event_id_text=event_id_text,
+        )
+
     if "event_time" not in data or "ingest_time" not in data:
         raise TelemetryValidationError(
             RejectionCode.MISSING_TIMESTAMP,
@@ -110,7 +137,7 @@ def _classify_validation_error(exc: ValidationError) -> RejectionCode:
     location = tuple(str(part) for part in first["loc"])
     if first["type"] == "missing":
         return RejectionCode.STRUCTURALLY_INVALID
-    if "event_time" in location or "ingest_time" in location:
+    if "event_time" in location or "replay_time" in location or "ingest_time" in location:
         return RejectionCode.INVALID_TIMESTAMP
     if "unit" in location:
         return RejectionCode.INVALID_UNIT
@@ -128,7 +155,12 @@ def decode_observation(raw_message: bytes) -> ObservationEnvelopeV1:
             f"message exceeds {MAX_MESSAGE_BYTES} bytes",
         )
     try:
-        decoded = json.loads(raw_message)
+        decoded = json.loads(raw_message, object_pairs_hook=_reject_duplicate_keys)
+    except _DuplicateJsonKeyError as exc:
+        raise TelemetryValidationError(
+            RejectionCode.DUPLICATE_JSON_KEY,
+            "message contains a duplicate JSON object key",
+        ) from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise TelemetryValidationError(
             RejectionCode.MALFORMED_JSON,

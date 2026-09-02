@@ -7,6 +7,7 @@
     "delivery": "LIVE"
   },
   "event_time": "2026-09-02T12:01:00Z",
+  "replay_time": null,
   "ingest_time": null,
   "payload_type": "environment.ammonia_concentration",
   "payload": {

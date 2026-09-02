@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+from collections.abc import Callable
 from typing import Any, cast
 
 import paho.mqtt.client as mqtt
 import pytest
+from paho.mqtt.enums import MQTTErrorCode
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.properties import Properties
+from paho.mqtt.reasoncodes import ReasonCode
 
 from pigwatch_schemas import serialize_observation
 from pigwatch_telemetry import (
@@ -17,12 +21,13 @@ from pigwatch_telemetry import (
     MqttIngestionWorker,
     MqttTelemetryPublisher,
     ObservationCategory,
+    PersistenceUnavailable,
     ProcessingResult,
     ProcessingStatus,
     ScopeKind,
-    TelemetryProcessor,
     TopicRoute,
 )
+from pigwatch_telemetry.mqtt import InboundMessage
 from tests.support import load_observation_fixture
 
 
@@ -87,7 +92,47 @@ class FakeConsumerPahoClient(FakePahoClient):
 
     def __init__(self) -> None:
         super().__init__()
+        self.on_subscribe: Any = None
+        self.on_message: Any = None
         self.acknowledgements: list[tuple[int, int]] = []
+        self.connect_properties: Properties | None = None
+        self.subscription: tuple[str, int] | None = None
+        self.subscription_mid = 7
+
+    def connect_async(
+        self,
+        host: str,
+        port: int,
+        keepalive: int,
+        *,
+        clean_start: bool,
+        properties: Properties | None = None,
+    ) -> None:
+        del host, port, keepalive
+        assert clean_start is False
+        self.connect_properties = properties
+
+    def subscribe(self, topic: str, qos: int = 0) -> tuple[MQTTErrorCode, int]:
+        self.subscription = (topic, qos)
+        return mqtt.MQTT_ERR_SUCCESS, self.subscription_mid
+
+    def emit_connect(self) -> None:
+        self.on_connect(
+            self,
+            None,
+            None,
+            ReasonCode(PacketTypes.CONNACK, identifier=0),
+            None,
+        )
+
+    def emit_suback(self, *, qos: int = 1) -> None:
+        self.on_subscribe(
+            self,
+            None,
+            self.subscription_mid,
+            [ReasonCode(PacketTypes.SUBACK, identifier=qos)],
+            None,
+        )
 
     def ack(self, message_id: int, qos: int) -> int:
         self.acknowledgements.append((message_id, qos))
@@ -106,6 +151,67 @@ class TimeoutThenSucceedProcessor:
         if self.calls == 1:
             await asyncio.Event().wait()
         return ProcessingResult(ProcessingStatus.ACCEPTED, None)
+
+
+class BlockingProcessor:
+    """Track active work while holding processing until the test releases it."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+        self.active = 0
+        self.max_active = 0
+
+    async def process(self, topic: str, payload: bytes) -> ProcessingResult:
+        del topic, payload
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.started.set()
+        try:
+            await self.release.wait()
+            return ProcessingResult(ProcessingStatus.ACCEPTED, None)
+        finally:
+            self.active -= 1
+
+
+class SlowCancellationProcessor:
+    """Expose cancellation cleanup so close can prove it waits for settlement."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cleaned = asyncio.Event()
+
+    async def process(self, topic: str, payload: bytes) -> ProcessingResult:
+        del topic, payload
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+            raise AssertionError("test cancellation gate was unexpectedly released")
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)
+            self.cleaned.set()
+            raise
+
+
+class RetryProcessor:
+    """Remain in persistence retry until shutdown wakes or cancels the task."""
+
+    def __init__(self) -> None:
+        self.called = asyncio.Event()
+
+    async def process(self, topic: str, payload: bytes) -> ProcessingResult:
+        del topic, payload
+        self.called.set()
+        raise PersistenceUnavailable("test outage")
+
+
+async def wait_for(predicate: Callable[[], bool], *, timeout: float = 1.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("condition did not become true before timeout")
 
 
 def route() -> TopicRoute:
@@ -184,19 +290,174 @@ async def test_consumer_times_out_stranded_database_attempt_before_retry_and_ack
             persistence_retry_initial_seconds=0.01,
             persistence_retry_max_seconds=0.01,
         ),
-        cast(TelemetryProcessor, fake_processor),
+        fake_processor,
         client=cast(mqtt.Client, fake_client),
     )
-    message = cast(
-        mqtt.MQTTMessage,
-        SimpleNamespace(topic=route().topic(), payload=b"{}", mid=42, qos=1),
+    message = InboundMessage(
+        topic=route().topic(),
+        payload=b"{}",
+        message_id=42,
+        qos=1,
     )
 
-    result = await worker._process_until_durable(
-        cast(mqtt.Client, fake_client),
-        message,
-    )
+    result = await worker._process_until_durable(message)
 
     assert result == ProcessingResult(ProcessingStatus.ACCEPTED, None)
     assert fake_processor.calls == 2
     assert fake_client.acknowledgements == [(42, 1)]
+
+
+@pytest.mark.asyncio
+async def test_consumer_readiness_requires_successful_suback() -> None:
+    fake_client = FakeConsumerPahoClient()
+    worker = MqttIngestionWorker(
+        MqttConnectionSettings(receive_maximum=8, processing_concurrency=2),
+        TimeoutThenSucceedProcessor(),
+        client=cast(mqtt.Client, fake_client),
+    )
+
+    await worker.start()
+    assert not bool(worker.is_connected)
+    assert not bool(worker.is_ready)
+
+    fake_client.emit_connect()
+    assert bool(worker.is_connected)
+    assert not bool(worker.is_subscribed)
+    assert not bool(worker.is_ready)
+    assert worker.state.value == ConnectionState.SUBSCRIBING.value
+    assert fake_client.subscription == ("pigwatch/v1/observations/+/+/+/+", 1)
+    assert fake_client.connect_properties is not None
+    assert cast(Any, fake_client.connect_properties).ReceiveMaximum == 8
+
+    fake_client.emit_suback()
+    assert bool(worker.is_subscribed)
+    assert bool(worker.is_ready)
+    assert worker.state.value == ConnectionState.CONNECTED.value
+    assert worker.subscription_count == 1
+
+    await worker.close()
+
+
+@pytest.mark.asyncio
+async def test_consumer_rejects_non_qos_one_suback_for_readiness() -> None:
+    fake_client = FakeConsumerPahoClient()
+    worker = MqttIngestionWorker(
+        MqttConnectionSettings(),
+        TimeoutThenSucceedProcessor(),
+        client=cast(mqtt.Client, fake_client),
+    )
+
+    await worker.start()
+    fake_client.emit_connect()
+    fake_client.emit_suback(qos=0)
+
+    assert bool(worker.is_connected)
+    assert not bool(worker.is_subscribed)
+    assert not bool(worker.is_ready)
+    await worker.close()
+
+
+@pytest.mark.asyncio
+async def test_receive_limit_and_semaphore_bound_pending_and_active_processing() -> None:
+    fake_client = FakeConsumerPahoClient()
+    processor = BlockingProcessor()
+    worker = MqttIngestionWorker(
+        MqttConnectionSettings(receive_maximum=6, processing_concurrency=2),
+        processor,
+        client=cast(mqtt.Client, fake_client),
+    )
+    await worker.start()
+    fake_client.emit_connect()
+    fake_client.emit_suback()
+    assert worker.is_ready
+
+    for message_id in range(1, 7):
+        worker._schedule_message(InboundMessage(route().topic(), b"{}", message_id, 1))
+    worker._schedule_message(InboundMessage(route().topic(), b"{}", 7, 1))
+    await processor.started.wait()
+    await wait_for(lambda: worker.active_count == 2)
+
+    assert worker.pending_count == 6
+    assert worker.active_count == 2
+    assert processor.max_active == 2
+    assert bool(worker.is_saturated)
+    assert not bool(worker.is_ready)
+
+    processor.release.set()
+    await wait_for(lambda: worker.pending_count == 0)
+    assert len(fake_client.acknowledgements) == 6
+    assert not bool(worker.is_saturated)
+    assert bool(worker.is_ready)
+    await worker.close()
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_slow_cancellation_cleanup() -> None:
+    fake_client = FakeConsumerPahoClient()
+    processor = SlowCancellationProcessor()
+    worker = MqttIngestionWorker(
+        MqttConnectionSettings(
+            shutdown_grace_seconds=0.01,
+            shutdown_timeout_seconds=0.5,
+        ),
+        processor,
+        client=cast(mqtt.Client, fake_client),
+    )
+    await worker.start()
+    worker._schedule_message(InboundMessage(route().topic(), b"{}", 11, 1))
+    await processor.started.wait()
+
+    await worker.close()
+
+    assert processor.cleaned.is_set()
+    assert worker.pending_count == 0
+    assert fake_client.acknowledgements == []
+
+
+@pytest.mark.asyncio
+async def test_close_wakes_processing_that_is_waiting_to_retry() -> None:
+    fake_client = FakeConsumerPahoClient()
+    processor = RetryProcessor()
+    worker = MqttIngestionWorker(
+        MqttConnectionSettings(
+            persistence_retry_initial_seconds=5,
+            persistence_retry_max_seconds=5,
+            shutdown_grace_seconds=0.1,
+            shutdown_timeout_seconds=0.5,
+        ),
+        processor,
+        client=cast(mqtt.Client, fake_client),
+    )
+    await worker.start()
+    worker._schedule_message(InboundMessage(route().topic(), b"{}", 12, 1))
+    await processor.called.wait()
+
+    await worker.close()
+
+    assert worker.pending_count == 0
+    assert fake_client.acknowledgements == []
+
+
+@pytest.mark.asyncio
+async def test_close_allows_near_commit_work_to_ack_during_grace_period() -> None:
+    fake_client = FakeConsumerPahoClient()
+    processor = BlockingProcessor()
+    worker = MqttIngestionWorker(
+        MqttConnectionSettings(
+            shutdown_grace_seconds=0.2,
+            shutdown_timeout_seconds=0.5,
+        ),
+        processor,
+        client=cast(mqtt.Client, fake_client),
+    )
+    await worker.start()
+    worker._schedule_message(InboundMessage(route().topic(), b"{}", 13, 1))
+    await processor.started.wait()
+
+    closing = asyncio.create_task(worker.close())
+    await asyncio.sleep(0.02)
+    processor.release.set()
+    await closing
+
+    assert fake_client.acknowledgements == [(13, 1)]
+    assert worker.pending_count == 0

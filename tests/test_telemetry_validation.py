@@ -67,8 +67,17 @@ def test_all_static_provenance_fixtures_decode_without_losing_dimensions() -> No
             RejectionCode.INVALID_DELIVERY,
         ),
         (lambda data: data.pop("event_time"), RejectionCode.MISSING_TIMESTAMP),
+        (lambda data: data.pop("replay_time"), RejectionCode.MISSING_TIMESTAMP),
         (
             lambda data: data.update(event_time="not-a-time"),
+            RejectionCode.INVALID_TIMESTAMP,
+        ),
+        (
+            lambda data: data.update(replay_time="2026-09-02T15:30:00"),
+            RejectionCode.INVALID_TIMESTAMP,
+        ),
+        (
+            lambda data: data["source"].update(delivery="LIVE"),
             RejectionCode.INVALID_TIMESTAMP,
         ),
         (
@@ -116,6 +125,29 @@ def test_oversized_message_rejects_before_parsing() -> None:
     with pytest.raises(TelemetryValidationError) as raised:
         decode_observation(b"x" * 65_537)
     assert raised.value.code is RejectionCode.MESSAGE_TOO_LARGE
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    [
+        ('"schema_version":"1.0"', '"schema_version":"1.0","schema_version":"1.0"'),
+        ('"origin":"SYNTHETIC"', '"origin":"SYNTHETIC","origin":"PHYSICAL"'),
+        ('"value":64.0', '"value":64.0,"value":65.0'),
+        ('"status":"UNCERTAIN"', '"status":"UNCERTAIN","status":"GOOD"'),
+        (
+            '"trace_id":"7f3f55a4443f48e48a63723c23c1276f"',
+            '"trace_id":"7f3f55a4443f48e48a63723c23c1276f","trace_id":null',
+        ),
+    ],
+)
+def test_duplicate_json_keys_reject_recursively(needle: str, replacement: str) -> None:
+    raw = serialize_observation(load_observation_fixture("synthetic-recorded"))
+    duplicated = raw.decode().replace(needle, replacement, 1).encode()
+
+    with pytest.raises(TelemetryValidationError) as raised:
+        decode_observation(duplicated)
+
+    assert raised.value.code is RejectionCode.DUPLICATE_JSON_KEY
 
 
 def test_topic_round_trip_and_semantic_shape() -> None:

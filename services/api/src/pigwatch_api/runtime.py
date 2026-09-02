@@ -77,6 +77,6 @@ class TelemetryRuntime:
     async def readiness(self) -> DependencyReadiness:
         database_ready, mqtt_ready = await asyncio.gather(
             self._repository.healthcheck(),
-            asyncio.sleep(0, result=self._worker.is_connected),
+            asyncio.sleep(0, result=self._worker.is_ready),
         )
         return DependencyReadiness(postgresql=database_ready, mqtt=mqtt_ready)

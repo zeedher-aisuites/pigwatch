@@ -62,6 +62,8 @@ async def test_get_observation_by_event_id() -> None:
         "origin": "SYNTHETIC",
         "delivery": "RECORDED",
     }
+    assert envelope["event_time"] == "2026-09-02T11:30:00Z"
+    assert envelope["replay_time"] == "2026-09-02T15:30:00Z"
     assert envelope["ingest_time"] == "2026-09-02T16:00:00Z"
 
 

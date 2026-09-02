@@ -79,7 +79,9 @@ docker compose up --build
 
 The dashboard is served at `http://localhost:5173`. API liveness is at
 `http://localhost:8000/health/live`; readiness at `/health/ready` returns HTTP 200 only when
-PostgreSQL and the MQTT consumer are available. Minimal retrieval endpoints are:
+PostgreSQL is available, the MQTT consumer's intended QoS 1 subscription has received a successful
+SUBACK, and bounded ingestion capacity is available. Producers must wait for readiness before
+assuming the broker-to-database path exists. Minimal retrieval endpoints are:
 
 ```text
 GET /v1/observations/{event_id}
@@ -90,7 +92,7 @@ The MQTT observation topic is
 `pigwatch/v1/observations/{scope_kind}/{scope_id}/{source_id}/{category}` with QoS 1. The consumer
 ACKs only after a durable acceptance or rejection transaction. See
 [`docs/specs/m1-telemetry-core.md`](docs/specs/m1-telemetry-core.md) for the exact contract and actual
-delivery guarantee.
+delivery guarantee, including the explicit pre-subscription loss boundary.
 
 The initial Digital Farm is planned for M4 as a browser feature built with React, TypeScript,
 Three.js, and React Three Fiber. No 3D engine dependency or rendering behavior is included in M1.

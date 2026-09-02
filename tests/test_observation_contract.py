@@ -37,6 +37,7 @@ def make_envelope() -> ObservationEnvelopeV1:
             delivery=SourceDelivery.RECORDED,
         ),
         event_time=datetime(2026, 9, 2, 12, tzinfo=UTC),
+        replay_time=datetime(2026, 9, 2, 15, 30, tzinfo=UTC),
         ingest_time=None,
         payload_type=PayloadType.ENVIRONMENT_TEMPERATURE,
         payload=TemperaturePayload(value=21.5, unit="Cel"),
@@ -59,6 +60,8 @@ def test_envelope_serialization_is_deterministic_and_preserves_provenance() -> N
     assert decoded == envelope
     assert decoded.source.origin is SourceOrigin.SYNTHETIC
     assert decoded.source.delivery is SourceDelivery.RECORDED
+    assert decoded.event_time == datetime(2026, 9, 2, 12, tzinfo=UTC)
+    assert decoded.replay_time == datetime(2026, 9, 2, 15, 30, tzinfo=UTC)
     assert decoded.ingest_time is None
     assert json.loads(first)["payload"]["unit"] == "Cel"
 
@@ -68,7 +71,23 @@ def test_ingest_time_is_authoritative_utc_copy() -> None:
     accepted = envelope.accepted_at(datetime(2026, 9, 2, 8, tzinfo=UTC) + timedelta(hours=4))
 
     assert envelope.ingest_time is None
+    assert accepted.replay_time == envelope.replay_time
     assert accepted.ingest_time == datetime(2026, 9, 2, 12, tzinfo=UTC)
+
+
+def test_replay_time_is_required_for_recorded_and_forbidden_for_live_delivery() -> None:
+    recorded = make_envelope().model_dump(mode="json")
+    recorded["replay_time"] = None
+    with pytest.raises(ValidationError, match="recorded delivery requires replay_time"):
+        ObservationEnvelopeV1.model_validate(recorded)
+
+    live = make_envelope().model_dump(mode="json")
+    live["source"]["delivery"] = SourceDelivery.LIVE
+    with pytest.raises(ValidationError, match="live delivery requires replay_time to be null"):
+        ObservationEnvelopeV1.model_validate(live)
+
+    live["replay_time"] = None
+    assert ObservationEnvelopeV1.model_validate(live).replay_time is None
 
 
 def test_uuid7_generator_has_expected_version_and_is_deterministic_when_seeded() -> None:
@@ -86,6 +105,7 @@ def test_uuid7_generator_has_expected_version_and_is_deterministic_when_seeded()
         ("event_id", "6ba7b810-9dad-41d1-80b4-00c04fd430c8"),
         ("schema_version", "2.0"),
         ("event_time", "2026-09-02T12:00:00"),
+        ("replay_time", "2026-09-02T15:30:00"),
     ],
 )
 def test_envelope_rejects_invalid_identity_version_and_time(field: str, value: str) -> None:

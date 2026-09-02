@@ -26,6 +26,7 @@ def upgrade() -> None:
         sa.Column("source_origin", sa.String(length=16), nullable=False),
         sa.Column("source_delivery", sa.String(length=16), nullable=False),
         sa.Column("event_time", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("replay_time", sa.DateTime(timezone=True), nullable=True),
         sa.Column("ingest_time", sa.DateTime(timezone=True), nullable=False),
         sa.Column("payload_type", sa.String(length=64), nullable=False),
         sa.Column("value", sa.Float(), nullable=False),
@@ -47,6 +48,11 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "source_delivery IN ('LIVE', 'RECORDED')",
             name="ck_observations_source_delivery",
+        ),
+        sa.CheckConstraint(
+            "(source_delivery = 'RECORDED' AND replay_time IS NOT NULL) OR "
+            "(source_delivery = 'LIVE' AND replay_time IS NULL)",
+            name="ck_observations_replay_time",
         ),
         sa.CheckConstraint(
             "processing_outcome = 'ACCEPTED'",

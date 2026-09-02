@@ -22,6 +22,18 @@ from pigwatch_telemetry.topics import parse_observation_topic, validate_route_ma
 from pigwatch_telemetry.validation import decode_observation
 
 LOGGER = logging.getLogger(__name__)
+FINGERPRINT_DOMAIN = b"pigwatch-observation-v1\0"
+
+
+def canonical_observation_fingerprint(*, topic: str, envelope_bytes: bytes) -> str:
+    """Hash normalized routing scope and canonical wire content without ambiguity."""
+
+    digest = hashlib.sha256()
+    digest.update(FINGERPRINT_DOMAIN)
+    digest.update(topic.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(envelope_bytes)
+    return digest.hexdigest()
 
 
 class TelemetryProcessor:
@@ -52,23 +64,22 @@ class TelemetryProcessor:
             )
         except TelemetryValidationError as exc:
             evidence_bytes = raw_message[:MAX_MESSAGE_BYTES]
-            result = await self.repository.reject(
-                RejectionEvidence(
-                    received_at=received_at,
-                    topic=topic,
-                    event_id_text=exc.event_id_text,
-                    code=exc.code,
-                    detail=exc.detail,
-                    raw_message=evidence_bytes,
-                    raw_sha256=hashlib.sha256(raw_message).hexdigest(),
-                    raw_truncated=len(raw_message) > MAX_MESSAGE_BYTES,
-                )
+            evidence = RejectionEvidence(
+                received_at=received_at,
+                topic=topic,
+                event_id_text=exc.event_id_text,
+                code=exc.code,
+                detail=exc.detail,
+                raw_message=evidence_bytes,
+                raw_sha256=hashlib.sha256(raw_message).hexdigest(),
+                raw_truncated=len(raw_message) > MAX_MESSAGE_BYTES,
             )
+            result = await self.repository.reject(evidence)
             LOGGER.warning(
                 "telemetry_rejected",
                 extra={
-                    "event_id": exc.event_id_text,
-                    "topic": topic,
+                    "event_id": evidence.event_id_text,
+                    "topic": evidence.topic,
                     "outcome": result.status.value,
                     "rejection_code": exc.code.value,
                 },
@@ -76,13 +87,18 @@ class TelemetryProcessor:
             return result
 
         accepted = wire_envelope.accepted_at(received_at)
+        normalized_topic = route.topic()
+        canonical_bytes = serialize_observation(wire_envelope)
         delay = received_at - accepted.event_time
         threshold = timedelta(seconds=LATE_THRESHOLD_SECONDS)
         observation = NormalizedObservation(
             envelope=accepted,
-            topic=topic,
+            topic=normalized_topic,
             raw_message=raw_message,
-            fingerprint=hashlib.sha256(serialize_observation(wire_envelope)).hexdigest(),
+            fingerprint=canonical_observation_fingerprint(
+                topic=normalized_topic,
+                envelope_bytes=canonical_bytes,
+            ),
             is_late=delay > threshold,
             clock_skew_detected=delay < -threshold,
         )
@@ -93,7 +109,7 @@ class TelemetryProcessor:
             extra={
                 "event_id": str(accepted.event_id),
                 "source_id": accepted.source.source_id,
-                "topic": topic,
+                "topic": normalized_topic,
                 "outcome": result.status.value,
                 "rejection_code": result.rejection_code.value if result.rejection_code else None,
             },
