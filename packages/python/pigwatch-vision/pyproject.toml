@@ -1,0 +1,13 @@
+[project]
+name = "pigwatch-vision"
+version = "0.1.0"
+description = "Computer-vision boundary for PigWatch"
+requires-python = ">=3.12"
+dependencies = ["pigwatch-schemas", "pigwatch-sources"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pigwatch_vision"]
