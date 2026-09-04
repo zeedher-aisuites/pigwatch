@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 from dataclasses import dataclass
 from enum import StrEnum
@@ -68,17 +69,28 @@ class MqttConnectionSettings:
             raise ValueError("receive_maximum must be between 1 and 65535")
         if not 1 <= self.processing_concurrency <= self.receive_maximum:
             raise ValueError("processing_concurrency must be between 1 and receive_maximum")
-        positive_durations = (
-            self.connect_timeout_seconds,
-            self.publish_timeout_seconds,
-            self.persistence_attempt_timeout_seconds,
-            self.persistence_retry_initial_seconds,
-            self.persistence_retry_max_seconds,
-            self.shutdown_timeout_seconds,
-        )
-        if any(duration <= 0 for duration in positive_durations):
-            raise ValueError("MQTT timeouts and retry delays must be positive")
-        if not 0 <= self.shutdown_grace_seconds <= self.shutdown_timeout_seconds:
+        durations = {
+            "keepalive_seconds": self.keepalive_seconds,
+            "connect_timeout_seconds": self.connect_timeout_seconds,
+            "publish_timeout_seconds": self.publish_timeout_seconds,
+            "session_expiry_seconds": self.session_expiry_seconds,
+            "persistence_attempt_timeout_seconds": self.persistence_attempt_timeout_seconds,
+            "persistence_retry_initial_seconds": self.persistence_retry_initial_seconds,
+            "persistence_retry_max_seconds": self.persistence_retry_max_seconds,
+            "shutdown_grace_seconds": self.shutdown_grace_seconds,
+            "shutdown_timeout_seconds": self.shutdown_timeout_seconds,
+        }
+        invalid_durations = [
+            name
+            for name, duration in durations.items()
+            if not math.isfinite(duration) or duration <= 0
+        ]
+        if invalid_durations:
+            raise ValueError(
+                "MQTT durations must be finite and greater than zero: "
+                + ", ".join(invalid_durations)
+            )
+        if self.shutdown_grace_seconds > self.shutdown_timeout_seconds:
             raise ValueError("shutdown grace must fit within the shutdown timeout")
 
 

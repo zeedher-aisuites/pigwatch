@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "sensors": [
+    {
+      "source_id": "sim-temperature-1",
+      "measurement": "TEMPERATURE",
+      "mode": "PERIODIC",
+      "cadence_seconds": 5.0,
+      "initial_value": 22.0,
+      "minimum_value": 15.0,
+      "maximum_value": 30.0,
+      "maximum_step": 0.5,
+      "seed": 101,
+      "scope_kind": "site",
+      "scope_id": "development-site"
+    },
+    {
+      "source_id": "sim-humidity-1",
+      "measurement": "RELATIVE_HUMIDITY",
+      "mode": "PERIODIC",
+      "cadence_seconds": 5.0,
+      "initial_value": 65.0,
+      "minimum_value": 40.0,
+      "maximum_value": 85.0,
+      "maximum_step": 1.5,
+      "seed": 202,
+      "scope_kind": "site",
+      "scope_id": "development-site"
+    },
+    {
+      "source_id": "sim-nh3-1",
+      "measurement": "NH3",
+      "mode": "PERIODIC",
+      "cadence_seconds": 5.0,
+      "initial_value": 8.0,
+      "minimum_value": 0.0,
+      "maximum_value": 25.0,
+      "maximum_step": 0.75,
+      "seed": 303,
+      "scope_kind": "site",
+      "scope_id": "development-site"
+    }
+  ]
+}

@@ -2,10 +2,11 @@
 
 PigWatch is a simulation-first livestock health monitoring platform. It is designed to detect and communicate physiological and behavioral anomalies; it is not an autonomous veterinary diagnostic system.
 
-This repository contains the **M1 telemetry core** on top of the closed M0 foundation. Typed
-observations can travel through MQTT ingestion into PostgreSQL and be retrieved through the API.
-Sensor simulation, computer vision, anomaly detection, alerts, analytics and hardware integrations
-belong to later milestones.
+This repository contains the **M2 sensor simulator** on top of the closed M0 foundation and
+accepted M1 telemetry core. Deterministic synthetic temperature, relative-humidity, and NH3
+observations travel through the same MQTT ingestion path into PostgreSQL and can be retrieved
+through the API. Computer vision, anomaly detection, alerts, analytics, animal behavior, and
+hardware integrations belong to later milestones.
 
 ## Repository layout
 
@@ -13,6 +14,7 @@ belong to later milestones.
 apps/dashboard/          React + TypeScript operator dashboard shell
 services/api/            FastAPI service and health endpoints
 packages/python/         Shared schemas, source contracts, telemetry, and future package seams
+configs/                 Versioned local simulator configuration
 infra/                   Local infrastructure configuration
 tests/                   Cross-package Python tests
 docs/                    Product, architecture, ADR, specification, and plan records
@@ -94,6 +96,31 @@ ACKs only after a durable acceptance or rejection transaction. See
 [`docs/specs/m1-telemetry-core.md`](docs/specs/m1-telemetry-core.md) for the exact contract and actual
 delivery guarantee, including the explicit pre-subscription loss boundary.
 
+## M2 environmental simulator
+
+The simulator emits simple bounded-random-walk infrastructure signals. They are synthetic test and
+demo observations, not scientifically calibrated farm models or veterinary thresholds. Runtime
+readings always carry `origin=SYNTHETIC`, `delivery=LIVE`, and a null `replay_time`.
+
+Start the ingestion dependencies and wait for the M1 SUBACK-gated readiness boundary before
+starting a periodic simulator:
+
+```bash
+docker compose up -d --wait postgres mqtt api
+curl --fail http://127.0.0.1:8000/health/ready
+uv run pigwatch-simulator --config configs/simulator.development.json
+```
+
+The development configuration contains independent temperature, humidity, and NH3 sources. Copy
+it to create another versioned local profile; set a source's `mode` to `STATIC` for one publication
+and process exit, or keep `PERIODIC` for fixed-delay publication until interrupted. MQTT settings
+may be supplied with `--mqtt-host`, `--mqtt-port`, `--client-id`, timeout/attempt flags, or their
+`PIGWATCH_SIMULATOR_*` environment equivalents. Run `uv run pigwatch-simulator --help` for the
+complete command contract.
+
+See [`docs/specs/m2-sensor-simulator.md`](docs/specs/m2-sensor-simulator.md) for determinism,
+lifecycle, scheduling, provenance, failure, and retry semantics.
+
 The initial Digital Farm is planned for M4 as a browser feature built with React, TypeScript,
 Three.js, and React Three Fiber. No 3D engine dependency or rendering behavior is included in M1.
 
@@ -103,6 +130,6 @@ PigWatch outputs must be framed as observations, anomaly indications, and decisi
 
 ## Roadmap
 
-M0 established tooling and boundaries. M1 implements the telemetry core. The current milestone
-sequence lives in [docs/product/roadmap.md](docs/product/roadmap.md); M2 sensor simulation has not
-started.
+M0 established tooling and boundaries, M1 implements the accepted telemetry core, and M2 adds the
+environmental simulator. The remaining milestone sequence lives in
+[docs/product/roadmap.md](docs/product/roadmap.md).

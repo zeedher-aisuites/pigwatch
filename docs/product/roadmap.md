@@ -23,4 +23,9 @@
 
 Milestone boundaries are deliberate. A milestone may refine interfaces needed by its capability, but it should not pull later product behavior forward without a documented decision.
 
+M0 and M1 are closed. M2 implements deterministic synthetic environmental observations for
+temperature, relative humidity, and NH3 through the accepted M1 telemetry path. It does not add
+animal simulation, inferred health state, anomaly behavior, or dashboard functionality. M3 remains
+the next planned milestone.
+
 The M4 Digital Farm is browser-based using React, TypeScript, Three.js, and React Three Fiber. Godot and Unreal Engine remain possible future tools only if browser-based simulation eventually proves insufficient; neither is a current roadmap dependency.

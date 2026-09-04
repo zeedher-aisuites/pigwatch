@@ -17,6 +17,9 @@ SAFE_CONTEXT_FIELDS = (
     "dependency",
     "failure_kind",
     "retry_seconds",
+    "measurement",
+    "mode",
+    "source_count",
 )
 
 

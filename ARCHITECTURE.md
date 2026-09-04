@@ -5,8 +5,9 @@
 PigWatch collects livestock observations, detects physiological, environmental, and behavioral anomalies, and presents decision support to farm operators and veterinary professionals. It does not independently diagnose disease or prescribe treatment. Clinical language must preserve uncertainty, show supporting evidence, and direct users to qualified veterinary judgment.
 
 M0 established boundaries and development tooling. M1 adds typed observation transport,
-validation, MQTT ingestion, PostgreSQL persistence and minimal retrieval. It intentionally contains
-no sensor behavior, simulation ground truth ingestion, vision pipeline, Digital Farm rendering,
+validation, MQTT ingestion, PostgreSQL persistence and minimal retrieval. M2 adds deterministic
+synthetic environmental sources that use that accepted path. It intentionally contains no animal
+behavior or physiology, simulation ground truth ingestion, vision pipeline, Digital Farm rendering,
 anomaly engine, alerting, prediction or veterinary retrieval behavior.
 
 ## System boundary and architecture style
@@ -25,7 +26,7 @@ PigWatch begins as a modular monolith in a monorepo. Clear package and service s
 | API | FastAPI health/retrieval boundary and in-process telemetry worker | `services/api` |
 | Shared schemas | Versioned, transport-neutral vocabulary and provenance | `packages/python/pigwatch-schemas` |
 | Source contracts | Lifecycle shared by source adapters without universal acquisition semantics | `packages/python/pigwatch-sources` |
-| Simulation | Future deterministic scenarios, synthetic sources, and evaluation support | `packages/python/pigwatch-simulation` |
+| Simulation | M2 deterministic synthetic environmental sources and concurrent local runner; future scenario/evaluation seam | `packages/python/pigwatch-simulation` |
 | Vision | Future camera ingestion and computer-vision boundary | `packages/python/pigwatch-vision` |
 | Telemetry | MQTT publishing/ingestion, validation, normalization and PostgreSQL persistence | `packages/python/pigwatch-telemetry` |
 | Local infrastructure | PostgreSQL, MQTT, and containerized development configuration | `compose.yaml`, `infra` |
@@ -63,6 +64,26 @@ The M0 `SourceLifecycle` protocol captures only immutable descriptor access plus
 Adapters translate vendor formats, expose acquisition timestamps and source health, and manage device lifecycle; they do not perform anomaly detection or diagnosis. Replacing simulation with hardware should replace an adapter, not force a backend rewrite.
 
 Seeded synthetic scenarios should eventually be deterministic. Lifecycle and provenance contract tests should be reusable across source implementations, while capability-specific suites validate their chosen acquisition models. Failures or missing samples must be explicit rather than replaced by plausible synthetic values.
+
+## M2 environmental sensor simulation
+
+M2 defines the first capability-specific acquisition behavior without expanding the generic source
+lifecycle. Each `EnvironmentalSensorSimulator` has immutable identity, local seeded value and event
+random streams, an injectable UTC clock, and explicit lifecycle state. It produces one of the three
+existing M1 scalar payloads using a bounded random walk. The first value is configured; subsequent
+values add a seeded uniform step and clamp to configured bounds.
+
+Static mode publishes one observation. Periodic mode publishes immediately and then uses a
+fixed-delay cadence after each successful publication, so missed time does not create a catch-up
+burst. One task owns each source loop, while a small runner may compose multiple independent sources
+through one M1 MQTT publisher. Stop interrupts cadence waits and lets an in-flight bounded M1
+publication settle before cleanup.
+
+Generated M2 evidence is always `SYNTHETIC` + `LIVE`. The event time and deterministic UUIDv7 are
+created before publication; the immutable envelope is reused by M1 for PUBACK retries. The simulator
+does not add a retry layer, durable outbox, database state, direct ingestion call, recorded replay,
+or simulation ground-truth contract. Exact behavior is specified in
+[`docs/specs/m2-sensor-simulator.md`](docs/specs/m2-sensor-simulator.md).
 
 ## Source provenance
 

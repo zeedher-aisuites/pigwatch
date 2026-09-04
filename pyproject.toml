@@ -25,6 +25,7 @@ members = [
 
 [tool.uv.sources]
 pigwatch-schemas = { workspace = true }
+pigwatch-simulation = { workspace = true }
 pigwatch-sources = { workspace = true }
 pigwatch-telemetry = { workspace = true }
 

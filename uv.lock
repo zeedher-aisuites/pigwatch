@@ -597,12 +597,16 @@ source = { editable = "packages/python/pigwatch-simulation" }
 dependencies = [
     { name = "pigwatch-schemas" },
     { name = "pigwatch-sources" },
+    { name = "pigwatch-telemetry" },
+    { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "pigwatch-schemas", editable = "packages/python/pigwatch-schemas" },
     { name = "pigwatch-sources", editable = "packages/python/pigwatch-sources" },
+    { name = "pigwatch-telemetry", editable = "packages/python/pigwatch-telemetry" },
+    { name = "pydantic", specifier = ">=2.10,<3" },
 ]
 
 [[package]]
