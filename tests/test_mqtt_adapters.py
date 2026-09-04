@@ -55,6 +55,8 @@ class FakePahoClient:
         self.payloads: list[bytes] = []
         self.topics: list[str] = []
         self.started = False
+        self.loop_start_calls = 0
+        self.loop_stop_calls = 0
 
     def reconnect_delay_set(self, min_delay: int, max_delay: int) -> None:
         assert (min_delay, max_delay) == (1, 30)
@@ -70,8 +72,10 @@ class FakePahoClient:
         del host, port, keepalive, clean_start
         self.on_connect(self, None, None, 0, None)
 
-    def loop_start(self) -> None:
+    def loop_start(self) -> MQTTErrorCode:
+        self.loop_start_calls += 1
         self.started = True
+        return mqtt.MQTT_ERR_SUCCESS
 
     def publish(self, topic: str, payload: bytes, qos: int, retain: bool) -> FakeMessageInfo:
         assert qos == 1
@@ -88,8 +92,10 @@ class FakePahoClient:
         del reasoncode, properties
         return mqtt.MQTT_ERR_SUCCESS
 
-    def loop_stop(self) -> None:
+    def loop_stop(self) -> MQTTErrorCode:
+        self.loop_stop_calls += 1
         self.started = False
+        return mqtt.MQTT_ERR_SUCCESS
 
 
 class FakeConsumerPahoClient(FakePahoClient):
@@ -107,6 +113,7 @@ class FakeConsumerPahoClient(FakePahoClient):
         self.reconnect_hook: Callable[[], None] | None = None
         self.disconnect_calls = 0
         self.reconnect_calls = 0
+        self.connect_async_calls = 0
 
     def connect_async(
         self,
@@ -119,7 +126,17 @@ class FakeConsumerPahoClient(FakePahoClient):
     ) -> None:
         del host, port, keepalive
         assert clean_start is False
+        self.connect_async_calls += 1
         self.connect_properties = properties
+
+    def loop_start(self) -> MQTTErrorCode:
+        result = super().loop_start()
+        if self.loop_start_calls > 1:
+            self.emit_connect()
+            self.emit_suback()
+            if self.reconnect_hook is not None:
+                self.reconnect_hook()
+        return result
 
     def subscribe(self, topic: str, qos: int = 0) -> tuple[MQTTErrorCode, int]:
         self.subscription = (topic, qos)
@@ -168,10 +185,6 @@ class FakeConsumerPahoClient(FakePahoClient):
 
     def reconnect(self) -> MQTTErrorCode:
         self.reconnect_calls += 1
-        self.emit_connect()
-        self.emit_suback()
-        if self.reconnect_hook is not None:
-            self.reconnect_hook()
         return mqtt.MQTT_ERR_SUCCESS
 
 
@@ -514,7 +527,7 @@ async def test_unexpected_receive_overflow_forces_persistent_session_redelivery(
     assert not worker.is_ready
 
     processor.release.set()
-    await wait_for(lambda: fake_client.reconnect_calls == 1)
+    await wait_for(lambda: fake_client.loop_start_calls == 2)
     await wait_for(lambda: fake_client.acknowledgements == [(1, 1), (2, 1)])
     await wait_for(lambda: worker.pending_count == 0 and worker.is_ready)
 
@@ -522,7 +535,45 @@ async def test_unexpected_receive_overflow_forces_persistent_session_redelivery(
     assert processor.max_active == 1
     assert worker.active_count == 0
     assert not bool(worker.is_saturated)
+    assert fake_client.loop_stop_calls == 1
+    assert fake_client.connect_async_calls == 2
+    assert fake_client.reconnect_calls == 0
     await worker.close()
+    assert fake_client.loop_stop_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_close_during_overflow_recovery_does_not_restart_network_loop() -> None:
+    fake_client = FakeConsumerPahoClient()
+    processor = BlockingProcessor()
+    worker = MqttIngestionWorker(
+        MqttConnectionSettings(
+            receive_maximum=1,
+            processing_concurrency=1,
+            shutdown_grace_seconds=0.01,
+            shutdown_timeout_seconds=0.5,
+        ),
+        processor,
+        client=cast(mqtt.Client, fake_client),
+    )
+    await worker.start()
+    fake_client.emit_connect()
+    fake_client.emit_suback()
+
+    worker._schedule_message(InboundMessage(route().topic(), b"first", 1, 1))
+    await processor.started.wait()
+    worker._schedule_message(InboundMessage(route().topic(), b"overflow", 2, 1))
+    await wait_for(lambda: fake_client.disconnect_calls == 1)
+
+    await worker.close()
+
+    assert worker.state is ConnectionState.STOPPED
+    assert worker.pending_count == 0
+    assert not worker.is_ready
+    assert fake_client.connect_async_calls == 1
+    assert fake_client.loop_start_calls == 1
+    assert fake_client.loop_stop_calls == 1
+    assert fake_client.reconnect_calls == 0
 
 
 @pytest.mark.asyncio

@@ -229,8 +229,9 @@ Control, ground-truth, health and dead-letter data must not use observation topi
   A durably settled slot is released immediately before its synchronous ACK handoff, independent
   of later task-callback cleanup, so a broker replacement delivery can take ownership safely.
 - An unexpected delivery beyond the negotiated bound is never silently dropped. Ingestion marks
-  itself unready, disconnects and restores the persistent session after owned work settles, leaving
-  the overflow delivery unacknowledged and eligible for broker redelivery.
+  itself unready, disconnects and waits for owned work to settle, joins the terminated Paho network
+  loop, initializes a fresh asynchronous connection and starts exactly one replacement loop. The
+  persistent session then redelivers unacknowledged work; readiness remains false until SUBACK.
 - A valid message is acknowledged only after the PostgreSQL transaction commits.
 - An invalid message is acknowledged only after its rejection record commits.
 - A database failure leaves the message unacknowledged. Each persistence attempt has a 10-second
@@ -342,7 +343,7 @@ M1. Queries order by event time unless the caller explicitly filters differently
 The consumer remains alive for malformed or semantically invalid messages. Rejections use stable
 codes including:
 
-- `MESSAGE_TOO_LARGE`, `MALFORMED_JSON`, `STRUCTURALLY_INVALID`;
+- `MESSAGE_TOO_LARGE`, `MALFORMED_JSON`, `JSON_NESTING_TOO_DEEP`, `STRUCTURALLY_INVALID`;
 - `DUPLICATE_JSON_KEY` for duplicate keys at any JSON object depth;
 - `MISSING_EVENT_ID`, `INVALID_EVENT_ID`;
 - `MISSING_SCHEMA_VERSION`, `UNSUPPORTED_SCHEMA_VERSION`;
@@ -357,13 +358,17 @@ bounded before insertion. Rejection evidence retains bounded raw bytes plus SHA-
 raw message. Deterministic invalid input therefore commits once and is ACKed; dependency/persistence
 outages remain unacknowledged and retry. Manual prevalidation checks primitive JSON types before
 enum membership or UUID parsing, and malformed array/object values are always routed through the
-same controlled durable-rejection path.
+same controlled durable-rejection path. Excessive nesting is handled at the JSON decode and typed
+validation boundaries without recursively walking the malicious structure; parser recursion
+failures become `JSON_NESTING_TOO_DEEP` and retain the original bounded raw evidence.
 
 ## Reconnect and restart behavior
 
 The publisher and consumer expose connection and subscription state. Initial broker unavailability
 does not kill the API process. The Paho network loop reconnects with delays from one through thirty
-seconds, and readiness returns only after a successful SUBACK. Shutdown is bounded and awaits task
+seconds, and readiness returns only after a successful SUBACK. Deliberate overflow recovery accounts
+for Paho ending its threaded loop on `disconnect()`: the old thread is joined before `connect_async()`
+and one new `loop_start()`. Shutdown prevents that restart once stopping begins and awaits task
 cleanup before repository disposal; messages not acknowledged are eligible for broker redelivery.
 Database failures retry in process and remain visible in readiness/logs.
 
@@ -430,5 +435,7 @@ M1 is acceptable when automated tests and a local Compose smoke test demonstrate
 14. bounded processing concurrency and graceful shutdown are demonstrated;
 15. container-valued invalid fields reject durably, ACK and do not poison the consumer;
 16. ACK handoff cannot strand a replacement delivery at the receive limit;
-17. no M2 sensor generator, dashboard product feature or LLM dependency exists; and
-18. the working tree is clean after the review-ready commit.
+17. excessive JSON nesting rejects durably without escaping as `RecursionError`;
+18. deliberate overflow restarts exactly one Paho loop and restores SUBACK-gated redelivery;
+19. no M2 sensor generator, dashboard product feature or LLM dependency exists; and
+20. the working tree is clean after the review-ready commit.

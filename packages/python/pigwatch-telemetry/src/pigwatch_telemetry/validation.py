@@ -31,6 +31,13 @@ _SOURCE_DELIVERIES = frozenset(item.value for item in SourceDelivery)
 _PAYLOAD_TYPES = frozenset(item.value for item in PayloadType)
 
 
+def _reject_excessive_json_nesting(exc: RecursionError) -> TelemetryValidationError:
+    return TelemetryValidationError(
+        RejectionCode.JSON_NESTING_TOO_DEEP,
+        "message JSON nesting exceeds the supported parser depth",
+    )
+
+
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -173,6 +180,8 @@ def decode_observation(raw_message: bytes) -> ObservationEnvelopeV1:
         )
     try:
         decoded = json.loads(raw_message, object_pairs_hook=_reject_duplicate_keys)
+    except RecursionError as exc:
+        raise _reject_excessive_json_nesting(exc) from exc
     except _DuplicateJsonKeyError as exc:
         raise TelemetryValidationError(
             RejectionCode.DUPLICATE_JSON_KEY,
@@ -193,6 +202,8 @@ def decode_observation(raw_message: bytes) -> ObservationEnvelopeV1:
         event_id_text = _prevalidate(decoded)
     except TelemetryValidationError:
         raise
+    except RecursionError as exc:
+        raise _reject_excessive_json_nesting(exc) from exc
     except (KeyError, TypeError, ValueError) as exc:
         # Keep deterministic invalid JSON shapes on the durable rejection path even if a
         # future manual prevalidation rule accidentally assumes a scalar or object value.
@@ -205,11 +216,17 @@ def decode_observation(raw_message: bytes) -> ObservationEnvelopeV1:
         # JSON strict mode accepts canonical JSON strings for UUID/datetime/enum fields while still
         # rejecting dangerous Python-side coercions such as numeric strings and booleans.
         return ObservationEnvelopeV1.model_validate_json(raw_message, strict=True)
+    except RecursionError as exc:
+        raise _reject_excessive_json_nesting(exc) from exc
     except ValidationError as exc:
-        first = exc.errors(include_url=False)[0]
-        location = ".".join(str(part) for part in first["loc"])
+        try:
+            first = exc.errors(include_url=False)[0]
+            location = ".".join(str(part) for part in first["loc"])
+            code = _classify_validation_error(exc)
+        except RecursionError as recursion_exc:
+            raise _reject_excessive_json_nesting(recursion_exc) from recursion_exc
         raise TelemetryValidationError(
-            _classify_validation_error(exc),
+            code,
             f"invalid field {location}: {first['msg']}",
             event_id_text=event_id_text,
         ) from exc

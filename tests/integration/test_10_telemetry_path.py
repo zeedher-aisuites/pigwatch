@@ -17,7 +17,7 @@ from uuid import uuid4
 
 import paho.mqtt.client as mqtt
 import pytest
-from paho.mqtt.enums import CallbackAPIVersion
+from paho.mqtt.enums import CallbackAPIVersion, MQTTErrorCode
 
 from pigwatch_schemas import ObservationEnvelopeV1, new_event_id
 from pigwatch_telemetry import (
@@ -59,8 +59,10 @@ class BoundedDelegatingProcessor:
         self.release = asyncio.Event()
         self.active = 0
         self.maximum_active = 0
+        self.calls = 0
 
     async def process(self, topic: str, payload: bytes) -> ProcessingResult:
+        self.calls += 1
         self.active += 1
         self.maximum_active = max(self.maximum_active, self.active)
         try:
@@ -68,6 +70,38 @@ class BoundedDelegatingProcessor:
             return await self.inner.process(topic, payload)
         finally:
             self.active -= 1
+
+
+class LifecycleTrackingPahoClient(mqtt.Client):
+    """Real Paho client that exposes network-loop lifecycle facts to integration tests."""
+
+    def __init__(self, *, client_id: str) -> None:
+        super().__init__(
+            CallbackAPIVersion.VERSION2,
+            client_id=client_id,
+            protocol=mqtt.MQTTv5,
+            manual_ack=True,
+        )
+        self.loop_start_calls = 0
+        self.loop_stop_calls = 0
+        self.overlapping_loop_starts = 0
+
+    @property
+    def network_loop_alive(self) -> bool:
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
+    def loop_start(self) -> MQTTErrorCode:
+        if self.network_loop_alive:
+            self.overlapping_loop_starts += 1
+        result = super().loop_start()
+        if result == mqtt.MQTT_ERR_SUCCESS:
+            self.loop_start_calls += 1
+        return result
+
+    def loop_stop(self) -> MQTTErrorCode:
+        self.loop_stop_calls += 1
+        return super().loop_stop()
 
 
 def route_for(envelope: ObservationEnvelopeV1) -> TopicRoute:
@@ -245,6 +279,60 @@ async def test_invalid_message_is_recorded_and_consumer_continues(
     finally:
         await publisher.close()
         await worker.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_deep_json_poison_is_acked_and_valid_processing_continues(
+    postgres_repository: PostgresObservationRepository,
+    mqtt_settings: MqttConnectionSettings,
+) -> None:
+    consumer_id = f"integration-deep-json-{uuid4()}"
+    first_worker, publisher = await start_path(
+        postgres_repository,
+        mqtt_settings,
+        consumer_id=consumer_id,
+    )
+    second_worker: MqttIngestionWorker | None = None
+    envelope = load_observation_fixture("synthetic-live").model_copy(
+        update={"event_id": new_event_id()}
+    )
+    raw = b"[" * 10_000 + b"0" + b"]" * 10_000
+    try:
+        await asyncio.to_thread(
+            publish_raw,
+            mqtt_settings,
+            route_for(envelope).topic(),
+            raw,
+        )
+        await wait_until(
+            lambda: _has_rejection(postgres_repository, RejectionCode.JSON_NESTING_TOO_DEEP)
+        )
+        await wait_until(lambda: first_worker.pending_count == 0 and first_worker.is_ready)
+        assert await postgres_repository.rejection_count(RejectionCode.JSON_NESTING_TOO_DEEP) == 1
+
+        await publisher.publish(route_for(envelope), envelope)
+        await wait_until(lambda: _is_persisted(postgres_repository, envelope.event_id))
+        assert await postgres_repository.count(envelope.event_id) == 1
+
+        await first_worker.close()
+        second_worker = MqttIngestionWorker(
+            mqtt_settings,
+            TelemetryProcessor(postgres_repository),
+            client_id=consumer_id,
+        )
+        await second_worker.start()
+        assert await second_worker.wait_until_ready(10)
+        await asyncio.sleep(1)
+        assert await postgres_repository.rejection_count(RejectionCode.JSON_NESTING_TOO_DEEP) == 1
+        assert second_worker.pending_count == 0
+        assert second_worker.is_ready
+    finally:
+        await publisher.close()
+        if second_worker is not None:
+            await second_worker.close()
+        elif first_worker.state is not ConnectionState.STOPPED:
+            await first_worker.close()
 
 
 @pytest.mark.integration
@@ -497,7 +585,7 @@ async def test_real_broker_burst_respects_receive_and_processing_bounds(
         assert worker.pending_count <= bounded_settings.receive_maximum
         assert processor.maximum_active == bounded_settings.processing_concurrency
         assert worker.is_saturated
-        assert not worker.is_ready
+        assert not bool(worker.is_ready)
 
         processor.release.set()
         await wait_until(
@@ -512,6 +600,102 @@ async def test_real_broker_burst_respects_receive_and_processing_bounds(
         processor.release.set()
         await publisher.close()
         await worker.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_overflow_restarts_paho_loop_and_redelivers_persistent_session(
+    postgres_repository: PostgresObservationRepository,
+    mqtt_settings: MqttConnectionSettings,
+) -> None:
+    negotiated_settings = replace(
+        mqtt_settings,
+        receive_maximum=2,
+        processing_concurrency=1,
+    )
+    processor = BoundedDelegatingProcessor(TelemetryProcessor(postgres_repository))
+    consumer_id = f"integration-overflow-recovery-{uuid4()}"
+    client = LifecycleTrackingPahoClient(client_id=consumer_id)
+    worker = MqttIngestionWorker(
+        negotiated_settings,
+        processor,
+        client=client,
+    )
+    publisher = MqttTelemetryPublisher(
+        negotiated_settings,
+        client_id=f"integration-overflow-publisher-{uuid4()}",
+    )
+    base = load_observation_fixture("synthetic-live")
+    first = base.model_copy(update={"event_id": new_event_id()})
+    overflow = base.model_copy(update={"event_id": new_event_id()})
+
+    await worker.start()
+    await publisher.start()
+    assert await worker.wait_until_ready(10)
+    assert await publisher.wait_until_connected(10)
+
+    # The real broker negotiated two in-flight deliveries. Lower only the internal application
+    # ownership bound after CONNACK so the second real broker callback deterministically exercises
+    # the production overflow lifecycle without weakening production configuration.
+    worker._settings = replace(negotiated_settings, receive_maximum=1)
+    try:
+        await publisher.publish(route_for(first), first)
+        await wait_until(lambda: worker.pending_count == 1 and worker.active_count == 1)
+        assert not bool(worker.is_ready)
+
+        await publisher.publish(route_for(overflow), overflow)
+        await wait_until(lambda: not worker.is_connected)
+        assert not worker.is_ready
+        assert client.loop_start_calls == 1
+
+        # Restore the negotiated application bound before recovery. The temporary mismatch above
+        # exists only to force the otherwise defensive overflow path with a compliant real broker;
+        # production keeps the broker and application receive bounds equal.
+        worker._settings = negotiated_settings
+        processor.release.set()
+        await wait_until(
+            lambda: _all_persisted(
+                postgres_repository,
+                [first.event_id, overflow.event_id],
+            ),
+            timeout=30,
+        )
+        await wait_until(lambda: worker.pending_count == 0 and worker.is_ready, timeout=30)
+
+        assert worker.connection_count == 2
+        assert worker.subscription_count == 2
+        assert client.loop_stop_calls == 1
+        assert client.loop_start_calls == 2
+        assert client.overlapping_loop_starts == 0
+        assert bool(client.network_loop_alive)
+        assert processor.maximum_active == 1
+        assert worker.active_count == 0
+        assert processor.calls == 3
+        assert await postgres_repository.count(first.event_id) == 1
+        assert await postgres_repository.count(overflow.event_id) == 1
+
+        calls_after_settlement = processor.calls
+        await worker.close()
+        assert not bool(client.network_loop_alive)
+
+        # Reopening the same persistent client session proves both deliveries were ACKed and no
+        # message was left orphaned for a later external restart.
+        await worker.start()
+        assert await worker.wait_until_ready(10)
+        await asyncio.sleep(1)
+        assert processor.calls == calls_after_settlement
+        assert worker.pending_count == 0
+        assert bool(worker.is_ready)
+        assert await postgres_repository.count(first.event_id) == 1
+        assert await postgres_repository.count(overflow.event_id) == 1
+    finally:
+        processor.release.set()
+        await publisher.close()
+        if worker.state is not ConnectionState.STOPPED:
+            await worker.close()
+
+    assert not bool(client.network_loop_alive)
+    assert client.overlapping_loop_starts == 0
 
 
 @pytest.mark.integration

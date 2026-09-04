@@ -41,7 +41,9 @@ Count application capacity only while a delivery still requires durable processi
 slot immediately before the synchronous manual-ACK handoff, rather than waiting for task-callback
 cleanup. If an unexpected delivery nevertheless exceeds the negotiated bound, disconnect and
 restore the persistent session so the unacknowledged delivery remains eligible for broker
-redelivery; never silently drop it or create an unbounded queue.
+redelivery; never silently drop it or create an unbounded queue. Because Paho ends its threaded
+network loop after deliberate disconnect, join that loop before initializing a fresh asynchronous
+connection and starting exactly one replacement loop. Require a new SUBACK before readiness.
 
 Keep ingestion in the existing API deployable as a modular-monolith background component. Do not
 introduce another operated service in M1.
@@ -59,6 +61,8 @@ diagnostic detail. Retain bounded raw bytes plus SHA-256 of the complete raw mes
 invalid input, including recursive duplicate JSON keys and pathological metadata, must commit and
 ACK rather than enter a poison retry loop. Manual validation must type-check arbitrary JSON values
 before membership or scalar parsing so container-valued fields follow that same rejection path.
+Catch decoder or typed-validator recursion failures at their boundaries as
+`JSON_NESTING_TOO_DEEP`; do not recursively traverse malicious structures to calculate depth.
 
 The actual broker-to-database at-least-once path begins only after successful SUBACK establishes the
 intended persistent consumer subscription, and remains subject to configured broker persistence,

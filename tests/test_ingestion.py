@@ -1,5 +1,6 @@
 """Behavior tests for normalization, idempotency, ordering and invalid evidence."""
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -160,6 +161,26 @@ async def test_oversized_rejection_retains_bounded_evidence_and_hash() -> None:
     assert len(repository.rejections[0].raw_message) == 65_536
     assert repository.rejections[0].raw_truncated is True
     assert len(repository.rejections[0].raw_sha256) == 64
+
+
+@pytest.mark.asyncio
+async def test_deep_json_rejection_retains_exact_bounded_evidence_and_hash() -> None:
+    repository = MemoryObservationRepository()
+    processor = TelemetryProcessor(repository, clock=lambda: INGEST_TIME)
+    raw = b'{"":' * 10_000 + b"0" + b"}" * 10_000
+
+    result = await processor.process(
+        "pigwatch/v1/observations/global/all/source/temperature",
+        raw,
+    )
+
+    assert result.status is ProcessingStatus.REJECTED
+    assert result.rejection_code is RejectionCode.JSON_NESTING_TOO_DEEP
+    assert len(repository.rejections) == 1
+    assert repository.rejections[0].raw_message == raw
+    assert len(repository.rejections[0].raw_message) <= 65_536
+    assert repository.rejections[0].raw_sha256 == hashlib.sha256(raw).hexdigest()
+    assert repository.rejections[0].raw_truncated is False
 
 
 @pytest.mark.asyncio

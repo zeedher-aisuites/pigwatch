@@ -194,6 +194,23 @@ def test_oversized_message_rejects_before_parsing() -> None:
 
 
 @pytest.mark.parametrize(
+    "raw",
+    [
+        b"[" * 10_000 + b"0" + b"]" * 10_000,
+        b'{"":' * 10_000 + b"0" + b"}" * 10_000,
+    ],
+    ids=["arrays", "objects"],
+)
+def test_excessive_json_nesting_is_a_controlled_rejection(raw: bytes) -> None:
+    assert len(raw) <= 65_536
+
+    with pytest.raises(TelemetryValidationError) as raised:
+        decode_observation(raw)
+
+    assert raised.value.code is RejectionCode.JSON_NESTING_TOO_DEEP
+
+
+@pytest.mark.parametrize(
     ("needle", "replacement"),
     [
         ('"schema_version":"1.0"', '"schema_version":"1.0","schema_version":"1.0"'),

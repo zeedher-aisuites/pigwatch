@@ -542,11 +542,27 @@ class MqttIngestionWorker:
             if self._stopping:
                 return
 
-            reconnect_result = await asyncio.to_thread(self._client.reconnect)
-            if reconnect_result != mqtt.MQTT_ERR_SUCCESS:
+            # Paho documents that disconnect() terminates a loop_start() thread. Join that
+            # thread before initializing a fresh asynchronous connection and starting exactly
+            # one replacement network loop. That loop owns retry behavior and CONNACK/SUBACK.
+            loop_stop_result = self._client.loop_stop()
+            if loop_stop_result not in {mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_INVAL}:
                 LOGGER.error(
-                    "mqtt_ingestion_overflow_reconnect_failed",
-                    extra={"outcome": reconnect_result},
+                    "mqtt_ingestion_overflow_loop_stop_failed",
+                    extra={"outcome": loop_stop_result},
+                )
+                return
+            self._state = ConnectionState.CONNECTING
+            self._connect_async()
+            loop_start_result = self._client.loop_start()
+            if loop_start_result != mqtt.MQTT_ERR_SUCCESS:
+                self._state = ConnectionState.DISCONNECTED
+                self._connected.clear()
+                self._subscribed.clear()
+                self._refresh_ready()
+                LOGGER.error(
+                    "mqtt_ingestion_overflow_loop_start_failed",
+                    extra={"outcome": loop_start_result},
                 )
         except (OSError, RuntimeError, ValueError) as exc:
             LOGGER.error(
@@ -616,6 +632,18 @@ class MqttIngestionWorker:
             return result
         return None
 
+    def _connect_async(self) -> None:
+        properties = Properties(PacketTypes.CONNECT)  # type: ignore[no-untyped-call]
+        properties.SessionExpiryInterval = self._settings.session_expiry_seconds
+        properties.ReceiveMaximum = self._settings.receive_maximum
+        self._client.connect_async(
+            self._settings.host,
+            self._settings.port,
+            self._settings.keepalive_seconds,
+            clean_start=False,
+            properties=properties,
+        )
+
     async def start(self) -> None:
         if self._started:
             return
@@ -629,16 +657,7 @@ class MqttIngestionWorker:
         self._subscribed.clear()
         self._ready.clear()
         self._state = ConnectionState.CONNECTING
-        properties = Properties(PacketTypes.CONNECT)  # type: ignore[no-untyped-call]
-        properties.SessionExpiryInterval = self._settings.session_expiry_seconds
-        properties.ReceiveMaximum = self._settings.receive_maximum
-        self._client.connect_async(
-            self._settings.host,
-            self._settings.port,
-            self._settings.keepalive_seconds,
-            clean_start=False,
-            properties=properties,
-        )
+        self._connect_async()
         self._client.loop_start()
         self._started = True
 
