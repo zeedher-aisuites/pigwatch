@@ -46,6 +46,16 @@ Invalid numeric configuration falls back to its documented default. Polling wait
 to settle before scheduling the next, pauses scheduled requests while the page is hidden, and
 aborts active requests on unmount. Manual refresh is available from the header.
 
+Each health endpoint reports the outcome of its current request. If readiness cannot be refreshed,
+previous dependency evidence is retained only under an explicit “Last known” label; dependencies
+with no successful readiness response are “Unknown.” A liveness request failure is shown as current
+API unavailability. Observation refresh failures do not erase previously loaded telemetry.
+
+Observation responses are rejected if their item count exceeds the requested bound or the API
+maximum of 500. Event, ingest, and replay timestamps must be timezone-aware RFC 3339 values. Very
+large and very small finite measurements use bounded scientific notation in the UI while the
+detail panel preserves the JavaScript machine representation and unit.
+
 The stale indication is an operator-dashboard freshness policy based on the newest loaded event
 time and browser clock. It is not a health or biological threshold.
 
