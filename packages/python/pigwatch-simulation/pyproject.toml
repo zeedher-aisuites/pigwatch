@@ -1,9 +1,17 @@
 [project]
 name = "pigwatch-simulation"
 version = "0.1.0"
-description = "Simulation boundary for PigWatch"
+description = "Deterministic synthetic environmental sources for PigWatch"
 requires-python = ">=3.12"
-dependencies = ["pigwatch-schemas", "pigwatch-sources"]
+dependencies = [
+  "pigwatch-schemas",
+  "pigwatch-sources",
+  "pigwatch-telemetry",
+  "pydantic>=2.10,<3",
+]
+
+[project.scripts]
+pigwatch-simulator = "pigwatch_simulation.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.27"]
