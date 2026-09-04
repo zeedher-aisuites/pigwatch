@@ -26,6 +26,11 @@ class _DuplicateJsonKeyError(ValueError):
     """Internal sentinel raised by recursive JSON object construction."""
 
 
+_SOURCE_ORIGINS = frozenset(item.value for item in SourceOrigin)
+_SOURCE_DELIVERIES = frozenset(item.value for item in SourceDelivery)
+_PAYLOAD_TYPES = frozenset(item.value for item in PayloadType)
+
+
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -44,8 +49,11 @@ def _prevalidate(data: dict[str, Any]) -> str | None:
     event_id_text = _event_id_text(data)
     if "event_id" not in data:
         raise TelemetryValidationError(RejectionCode.MISSING_EVENT_ID, "event_id is required")
+    event_id_value = data["event_id"]
     try:
-        event_id = UUID(str(data["event_id"]))
+        if not isinstance(event_id_value, str):
+            raise TypeError
+        event_id = UUID(event_id_value)
         if event_id.version != 7:
             raise ValueError
     except (TypeError, ValueError, AttributeError) as exc:
@@ -61,10 +69,11 @@ def _prevalidate(data: dict[str, Any]) -> str | None:
             "schema_version is required",
             event_id_text=event_id_text,
         )
-    if data["schema_version"] != SCHEMA_VERSION_V1:
+    schema_version = data["schema_version"]
+    if not isinstance(schema_version, str) or schema_version != SCHEMA_VERSION_V1:
         raise TelemetryValidationError(
             RejectionCode.UNSUPPORTED_SCHEMA_VERSION,
-            f"unsupported schema_version: {data['schema_version']!r}",
+            f"unsupported schema_version: {schema_version!r}",
             event_id_text=event_id_text,
         )
 
@@ -75,13 +84,15 @@ def _prevalidate(data: dict[str, Any]) -> str | None:
             "source origin and delivery are required",
             event_id_text=event_id_text,
         )
-    if source["origin"] not in {item.value for item in SourceOrigin}:
+    source_origin = source["origin"]
+    if not isinstance(source_origin, str) or source_origin not in _SOURCE_ORIGINS:
         raise TelemetryValidationError(
             RejectionCode.INVALID_ORIGIN,
             "source origin is invalid",
             event_id_text=event_id_text,
         )
-    if source["delivery"] not in {item.value for item in SourceDelivery}:
+    source_delivery = source["delivery"]
+    if not isinstance(source_delivery, str) or source_delivery not in _SOURCE_DELIVERIES:
         raise TelemetryValidationError(
             RejectionCode.INVALID_DELIVERY,
             "source delivery is invalid",
@@ -89,13 +100,13 @@ def _prevalidate(data: dict[str, Any]) -> str | None:
         )
 
     replay_time_present = "replay_time" in data and data["replay_time"] is not None
-    if source["delivery"] == SourceDelivery.RECORDED.value and not replay_time_present:
+    if source_delivery == SourceDelivery.RECORDED.value and not replay_time_present:
         raise TelemetryValidationError(
             RejectionCode.MISSING_TIMESTAMP,
             "recorded delivery requires replay_time",
             event_id_text=event_id_text,
         )
-    if source["delivery"] == SourceDelivery.LIVE.value and replay_time_present:
+    if source_delivery == SourceDelivery.LIVE.value and replay_time_present:
         raise TelemetryValidationError(
             RejectionCode.INVALID_TIMESTAMP,
             "live delivery requires replay_time to be null",
@@ -116,14 +127,20 @@ def _prevalidate(data: dict[str, Any]) -> str | None:
         )
 
     payload_type = data.get("payload_type")
-    if payload_type not in {item.value for item in PayloadType}:
+    if not isinstance(payload_type, str) or payload_type not in _PAYLOAD_TYPES:
         raise TelemetryValidationError(
             RejectionCode.UNKNOWN_PAYLOAD_TYPE,
             "payload_type is unknown",
             event_id_text=event_id_text,
         )
     payload = data.get("payload")
-    if isinstance(payload, dict) and "unit" not in payload:
+    if not isinstance(payload, dict):
+        raise TelemetryValidationError(
+            RejectionCode.STRUCTURALLY_INVALID,
+            "payload must be a JSON object",
+            event_id_text=event_id_text,
+        )
+    if "unit" not in payload:
         raise TelemetryValidationError(
             RejectionCode.INVALID_UNIT,
             "payload unit is required",
@@ -172,7 +189,18 @@ def decode_observation(raw_message: bytes) -> ObservationEnvelopeV1:
             "observation envelope must be a JSON object",
         )
 
-    event_id_text = _prevalidate(decoded)
+    try:
+        event_id_text = _prevalidate(decoded)
+    except TelemetryValidationError:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
+        # Keep deterministic invalid JSON shapes on the durable rejection path even if a
+        # future manual prevalidation rule accidentally assumes a scalar or object value.
+        raise TelemetryValidationError(
+            RejectionCode.STRUCTURALLY_INVALID,
+            "message contains an invalid JSON field shape",
+            event_id_text=_event_id_text(decoded),
+        ) from exc
     try:
         # JSON strict mode accepts canonical JSON strings for UUID/datetime/enum fields while still
         # rejecting dangerous Python-side coercions such as numeric strings and booleans.

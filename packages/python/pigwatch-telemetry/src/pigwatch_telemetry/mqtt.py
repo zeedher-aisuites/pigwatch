@@ -299,6 +299,8 @@ class MqttIngestionWorker:
         self._subscription_count = 0
         self._pending_subscribe_mid: int | None = None
         self._pending: set[asyncio.Task[ProcessingResult | None]] = set()
+        self._overflow_recovery_task: asyncio.Task[None] | None = None
+        self._recovering_overflow = False
         self._active_count = 0
 
     @property
@@ -350,6 +352,7 @@ class MqttIngestionWorker:
             self._connected.is_set()
             and self._subscribed.is_set()
             and not self._saturated
+            and not self._recovering_overflow
             and not self._stopping
         )
         if ready:
@@ -414,6 +417,7 @@ class MqttIngestionWorker:
         self._pending_subscribe_mid = None
         self._subscription_count += 1
         self._state = ConnectionState.CONNECTED
+        self._recovering_overflow = False
         self._subscribed.set()
         self._refresh_ready()
         LOGGER.info("mqtt_subscription_established", extra={"broker_state": self._state.value})
@@ -468,11 +472,17 @@ class MqttIngestionWorker:
             return
         if len(self._pending) >= self._settings.receive_maximum:
             self._saturated = True
+            self._recovering_overflow = True
             self._refresh_ready()
             LOGGER.error(
                 "mqtt_ingestion_receive_limit_exceeded",
                 extra={"outcome": self._settings.receive_maximum},
             )
+            if self._overflow_recovery_task is None or self._overflow_recovery_task.done():
+                self._overflow_recovery_task = asyncio.create_task(
+                    self._recover_overflow_by_reconnecting(),
+                    name="pigwatch-ingestion-overflow-recovery",
+                )
             return
         task = asyncio.create_task(
             self._process_with_limit(message),
@@ -499,6 +509,53 @@ class MqttIngestionWorker:
                     "mqtt_processing_task_failed",
                     exc_info=(type(exception), exception, exception.__traceback__),
                 )
+
+    def _release_current_delivery(self) -> None:
+        """Release capacity once persistence, not task cleanup, has settled the delivery."""
+
+        task = asyncio.current_task()
+        if task is None:
+            return
+        self._pending.discard(task)
+        self._saturated = len(self._pending) >= self._settings.receive_maximum
+        self._refresh_ready()
+
+    async def _recover_overflow_by_reconnecting(self) -> None:
+        """Return unowned overflow deliveries to the broker's persistent session."""
+
+        current_task = asyncio.current_task()
+        try:
+            reason_code = ReasonCode(PacketTypes.DISCONNECT, identifier=147)
+            disconnect_result = self._client.disconnect(reasoncode=reason_code)
+            if disconnect_result not in {mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN}:
+                LOGGER.error(
+                    "mqtt_ingestion_overflow_disconnect_failed",
+                    extra={"outcome": disconnect_result},
+                )
+
+            # Existing application-owned work may settle durably while disconnected. Wait
+            # until it has released its slots before restoring the persistent broker session.
+            while self._pending and not self._stopping:
+                await asyncio.sleep(0.01)
+            while self._connected.is_set() and not self._stopping:
+                await asyncio.sleep(0.01)
+            if self._stopping:
+                return
+
+            reconnect_result = await asyncio.to_thread(self._client.reconnect)
+            if reconnect_result != mqtt.MQTT_ERR_SUCCESS:
+                LOGGER.error(
+                    "mqtt_ingestion_overflow_reconnect_failed",
+                    extra={"outcome": reconnect_result},
+                )
+        except (OSError, RuntimeError, ValueError) as exc:
+            LOGGER.error(
+                "mqtt_ingestion_overflow_reconnect_failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+        finally:
+            if self._overflow_recovery_task is current_task:
+                self._overflow_recovery_task = None
 
     async def _process_with_limit(self, message: InboundMessage) -> ProcessingResult | None:
         semaphore = self._processing_semaphore
@@ -546,6 +603,10 @@ class MqttIngestionWorker:
                     return None
                 delay = min(delay * 2, self._settings.persistence_retry_max_seconds)
                 continue
+            # Paho can receive the broker's replacement delivery from another thread while
+            # ack() is executing. Release the durably settled slot first so capacity reflects
+            # messages that still require application responsibility, not callback cleanup.
+            self._release_current_delivery()
             acknowledgement = self._client.ack(message.message_id, message.qos)
             if acknowledgement != mqtt.MQTT_ERR_SUCCESS:
                 LOGGER.error(
@@ -563,6 +624,7 @@ class MqttIngestionWorker:
         self._shutdown_event = asyncio.Event()
         self._stopping = False
         self._saturated = False
+        self._recovering_overflow = False
         self._connected.clear()
         self._subscribed.clear()
         self._ready.clear()
@@ -601,6 +663,10 @@ class MqttIngestionWorker:
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._settings.shutdown_timeout_seconds
+        recovery_task = self._overflow_recovery_task
+        if recovery_task is not None and not recovery_task.done():
+            recovery_task.cancel()
+            await asyncio.wait({recovery_task}, timeout=max(0.0, deadline - loop.time()))
         pending = set(self._pending)
         if pending and self._settings.shutdown_grace_seconds > 0:
             _, pending = await asyncio.wait(
@@ -620,6 +686,8 @@ class MqttIngestionWorker:
         self._loop = None
         self._processing_semaphore = None
         self._shutdown_event = None
+        self._overflow_recovery_task = None
+        self._recovering_overflow = False
         self._started = False
         if pending:
             LOGGER.error("mqtt_shutdown_timeout", extra={"outcome": len(pending)})

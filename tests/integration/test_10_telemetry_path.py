@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
+from collections import Counter
 from collections.abc import Callable, Coroutine
+from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,6 +21,7 @@ from paho.mqtt.enums import CallbackAPIVersion
 
 from pigwatch_schemas import ObservationEnvelopeV1, new_event_id
 from pigwatch_telemetry import (
+    ConnectionState,
     MqttConnectionSettings,
     MqttIngestionWorker,
     MqttTelemetryPublisher,
@@ -243,11 +247,87 @@ async def test_invalid_message_is_recorded_and_consumer_continues(
         await worker.close()
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_container_valued_poison_messages_are_acked_after_durable_rejection(
+    postgres_repository: PostgresObservationRepository,
+    mqtt_settings: MqttConnectionSettings,
+) -> None:
+    consumer_id = f"integration-container-rejections-{uuid4()}"
+    first_worker, publisher = await start_path(
+        postgres_repository,
+        mqtt_settings,
+        consumer_id=consumer_id,
+    )
+    second_worker: MqttIngestionWorker | None = None
+    envelope = load_observation_fixture("synthetic-recorded")
+    expected_codes = [
+        RejectionCode.UNSUPPORTED_SCHEMA_VERSION,
+        RejectionCode.MISSING_PROVENANCE,
+        RejectionCode.INVALID_ORIGIN,
+        RejectionCode.INVALID_DELIVERY,
+        RejectionCode.INVALID_EVENT_ID,
+        RejectionCode.INVALID_TIMESTAMP,
+        RejectionCode.INVALID_TIMESTAMP,
+        RejectionCode.UNKNOWN_PAYLOAD_TYPE,
+        RejectionCode.STRUCTURALLY_INVALID,
+        RejectionCode.INVALID_VALUE,
+        RejectionCode.INVALID_UNIT,
+    ]
+    try:
+        for raw_message in malformed_container_messages(envelope):
+            await asyncio.to_thread(
+                publish_raw,
+                mqtt_settings,
+                route_for(envelope).topic(),
+                raw_message,
+            )
+        await wait_until(lambda: _has_rejection_total(postgres_repository, len(expected_codes)))
+        await wait_until(lambda: first_worker.pending_count == 0 and first_worker.is_ready)
+
+        expected_counts = Counter(expected_codes)
+        for code, expected_count in expected_counts.items():
+            assert await postgres_repository.rejection_count(code) == expected_count
+
+        # A valid message after every poison shape proves the consumer task remains healthy.
+        await publisher.publish(route_for(envelope), envelope)
+        await wait_until(lambda: _is_persisted(postgres_repository, envelope.event_id))
+        assert await postgres_repository.count(envelope.event_id) == 1
+
+        # Reusing the persistent session proves every poison delivery was ACKed. Any missed
+        # ACK would be redelivered and create another durable rejection after this restart.
+        await first_worker.close()
+        second_worker = MqttIngestionWorker(
+            mqtt_settings,
+            TelemetryProcessor(postgres_repository),
+            client_id=consumer_id,
+        )
+        await second_worker.start()
+        assert await second_worker.wait_until_ready(10)
+        await asyncio.sleep(1)
+        assert await postgres_repository.rejection_count() == len(expected_codes)
+        assert second_worker.pending_count == 0
+        assert second_worker.is_ready
+    finally:
+        await publisher.close()
+        if second_worker is not None:
+            await second_worker.close()
+        elif first_worker.state is not ConnectionState.STOPPED:
+            await first_worker.close()
+
+
 async def _has_rejection(
     repository: PostgresObservationRepository,
     code: RejectionCode,
 ) -> bool:
     return await repository.rejection_count(code) > 0
+
+
+async def _has_rejection_total(
+    repository: PostgresObservationRepository,
+    expected: int,
+) -> bool:
+    return await repository.rejection_count() == expected
 
 
 async def _is_persisted(repository: PostgresObservationRepository, event_id: Any) -> bool:
@@ -258,6 +338,35 @@ def serialize_with_duplicate_payload_value(envelope: ObservationEnvelopeV1) -> b
     raw = envelope.model_dump_json().encode()
     needle = f'"value":{envelope.payload.value}'
     return raw.decode().replace(needle, f'{needle},"value":99.0', 1).encode()
+
+
+def malformed_container_messages(envelope: ObservationEnvelopeV1) -> list[bytes]:
+    """Build one representative array/object poison value for each reviewed field."""
+
+    base = envelope.model_dump(mode="json")
+    messages: list[dict[str, Any]] = []
+
+    def mutated(mutation: Callable[[dict[str, Any]], None]) -> None:
+        data = deepcopy(base)
+        mutation(data)
+        messages.append(data)
+
+    mutated(lambda data: data.update(schema_version={}))
+    mutated(lambda data: data.update(source=[]))
+    mutated(lambda data: data["source"].update(origin=[]))
+    mutated(lambda data: data["source"].update(delivery={}))
+    mutated(lambda data: data.update(event_id=[]))
+    mutated(lambda data: data.update(event_time={}))
+    mutated(lambda data: data.update(replay_time=[]))
+    mutated(lambda data: data.update(payload_type={}))
+    mutated(lambda data: data.update(payload=[]))
+    mutated(lambda data: data["payload"].update(value={}))
+    mutated(lambda data: data["payload"].update(unit=[]))
+
+    return [
+        json.dumps(message, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+        for message in messages
+    ]
 
 
 @pytest.mark.integration

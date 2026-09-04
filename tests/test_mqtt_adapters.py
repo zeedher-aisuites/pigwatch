@@ -80,8 +80,13 @@ class FakePahoClient:
         self.payloads.append(payload)
         return FakeMessageInfo(published=len(self.payloads) > 1)
 
-    def disconnect(self) -> None:
-        return None
+    def disconnect(
+        self,
+        reasoncode: ReasonCode | None = None,
+        properties: Properties | None = None,
+    ) -> MQTTErrorCode:
+        del reasoncode, properties
+        return mqtt.MQTT_ERR_SUCCESS
 
     def loop_stop(self) -> None:
         self.started = False
@@ -98,6 +103,10 @@ class FakeConsumerPahoClient(FakePahoClient):
         self.connect_properties: Properties | None = None
         self.subscription: tuple[str, int] | None = None
         self.subscription_mid = 7
+        self.ack_hook: Callable[[], None] | None = None
+        self.reconnect_hook: Callable[[], None] | None = None
+        self.disconnect_calls = 0
+        self.reconnect_calls = 0
 
     def connect_async(
         self,
@@ -136,6 +145,33 @@ class FakeConsumerPahoClient(FakePahoClient):
 
     def ack(self, message_id: int, qos: int) -> int:
         self.acknowledgements.append((message_id, qos))
+        hook, self.ack_hook = self.ack_hook, None
+        if hook is not None:
+            hook()
+        return mqtt.MQTT_ERR_SUCCESS
+
+    def disconnect(
+        self,
+        reasoncode: ReasonCode | None = None,
+        properties: Properties | None = None,
+    ) -> MQTTErrorCode:
+        del reasoncode, properties
+        self.disconnect_calls += 1
+        self.on_disconnect(
+            self,
+            None,
+            None,
+            ReasonCode(PacketTypes.DISCONNECT, identifier=0),
+            None,
+        )
+        return mqtt.MQTT_ERR_SUCCESS
+
+    def reconnect(self) -> MQTTErrorCode:
+        self.reconnect_calls += 1
+        self.emit_connect()
+        self.emit_suback()
+        if self.reconnect_hook is not None:
+            self.reconnect_hook()
         return mqtt.MQTT_ERR_SUCCESS
 
 
@@ -161,9 +197,11 @@ class BlockingProcessor:
         self.started = asyncio.Event()
         self.active = 0
         self.max_active = 0
+        self.calls = 0
 
     async def process(self, topic: str, payload: bytes) -> ProcessingResult:
         del topic, payload
+        self.calls += 1
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         self.started.set()
@@ -203,6 +241,26 @@ class RetryProcessor:
         del topic, payload
         self.called.set()
         raise PersistenceUnavailable("test outage")
+
+
+class RecordingProcessor:
+    """Record exact delivery ownership while tracking the concurrency boundary."""
+
+    def __init__(self) -> None:
+        self.payloads: list[bytes] = []
+        self.active = 0
+        self.max_active = 0
+
+    async def process(self, topic: str, payload: bytes) -> ProcessingResult:
+        del topic
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            self.payloads.append(payload)
+            await asyncio.sleep(0)
+            return ProcessingResult(ProcessingStatus.ACCEPTED, None)
+        finally:
+            self.active -= 1
 
 
 async def wait_for(predicate: Callable[[], bool], *, timeout: float = 1.0) -> None:
@@ -373,7 +431,6 @@ async def test_receive_limit_and_semaphore_bound_pending_and_active_processing()
 
     for message_id in range(1, 7):
         worker._schedule_message(InboundMessage(route().topic(), b"{}", message_id, 1))
-    worker._schedule_message(InboundMessage(route().topic(), b"{}", 7, 1))
     await processor.started.wait()
     await wait_for(lambda: worker.active_count == 2)
 
@@ -388,6 +445,83 @@ async def test_receive_limit_and_semaphore_bound_pending_and_active_processing()
     assert len(fake_client.acknowledgements) == 6
     assert not bool(worker.is_saturated)
     assert bool(worker.is_ready)
+    await worker.close()
+
+
+@pytest.mark.asyncio
+async def test_ack_handoff_releases_capacity_before_done_callback() -> None:
+    fake_client = FakeConsumerPahoClient()
+    processor = RecordingProcessor()
+    worker = MqttIngestionWorker(
+        MqttConnectionSettings(receive_maximum=1, processing_concurrency=1),
+        processor,
+        client=cast(mqtt.Client, fake_client),
+    )
+    await worker.start()
+    fake_client.emit_connect()
+    fake_client.emit_suback()
+    handoff_state: list[tuple[int, bool, bool]] = []
+
+    def deliver_replacement_during_ack() -> None:
+        # ack() is still on the first task's stack, so its done callback cannot have run.
+        handoff_state.append((worker.pending_count, worker.is_saturated, worker.is_ready))
+        worker._schedule_message(InboundMessage(route().topic(), b"second", 2, 1))
+        handoff_state.append((worker.pending_count, worker.is_saturated, worker.is_ready))
+
+    fake_client.ack_hook = deliver_replacement_during_ack
+    worker._schedule_message(InboundMessage(route().topic(), b"first", 1, 1))
+
+    await wait_for(lambda: fake_client.acknowledgements == [(1, 1), (2, 1)])
+    await wait_for(lambda: worker.pending_count == 0 and worker.is_ready)
+
+    assert handoff_state == [(0, False, True), (1, True, False)]
+    assert processor.payloads == [b"first", b"second"]
+    assert processor.max_active == 1
+    assert worker.active_count == 0
+    assert not worker.is_saturated
+    await worker.close()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_receive_overflow_forces_persistent_session_redelivery() -> None:
+    fake_client = FakeConsumerPahoClient()
+    processor = BlockingProcessor()
+    worker = MqttIngestionWorker(
+        MqttConnectionSettings(receive_maximum=1, processing_concurrency=1),
+        processor,
+        client=cast(mqtt.Client, fake_client),
+    )
+    await worker.start()
+    fake_client.emit_connect()
+    fake_client.emit_suback()
+    first = InboundMessage(route().topic(), b"first", 1, 1)
+    overflow = InboundMessage(route().topic(), b"overflow", 2, 1)
+
+    worker._schedule_message(first)
+    await processor.started.wait()
+    assert worker.pending_count == 1
+    assert bool(worker.is_saturated)
+    assert not worker.is_ready
+
+    event_loop = asyncio.get_running_loop()
+
+    def redeliver_after_reconnect() -> None:
+        event_loop.call_soon_threadsafe(worker._schedule_message, overflow)
+
+    fake_client.reconnect_hook = redeliver_after_reconnect
+    worker._schedule_message(overflow)
+    await wait_for(lambda: fake_client.disconnect_calls == 1)
+    assert not worker.is_ready
+
+    processor.release.set()
+    await wait_for(lambda: fake_client.reconnect_calls == 1)
+    await wait_for(lambda: fake_client.acknowledgements == [(1, 1), (2, 1)])
+    await wait_for(lambda: worker.pending_count == 0 and worker.is_ready)
+
+    assert processor.calls == 2
+    assert processor.max_active == 1
+    assert worker.active_count == 0
+    assert not bool(worker.is_saturated)
     await worker.close()
 
 

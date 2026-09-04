@@ -2,6 +2,7 @@
 
 import json
 from copy import deepcopy
+from typing import Any
 
 import pytest
 
@@ -106,6 +107,71 @@ def test_invalid_fields_receive_explicit_rejection_codes(
     callable_mutation = mutation
     assert callable(callable_mutation)
     callable_mutation(data)
+    assert_rejected(data, expected)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "mutation", "expected"),
+    [
+        (
+            "schema_version",
+            lambda data: data.update(schema_version={}),
+            RejectionCode.UNSUPPORTED_SCHEMA_VERSION,
+        ),
+        ("source", lambda data: data.update(source=[]), RejectionCode.MISSING_PROVENANCE),
+        (
+            "source.origin",
+            lambda data: data["source"].update(origin=[]),
+            RejectionCode.INVALID_ORIGIN,
+        ),
+        (
+            "source.delivery",
+            lambda data: data["source"].update(delivery={}),
+            RejectionCode.INVALID_DELIVERY,
+        ),
+        (
+            "event_id",
+            lambda data: data.update(event_id=[]),
+            RejectionCode.INVALID_EVENT_ID,
+        ),
+        (
+            "event_time",
+            lambda data: data.update(event_time={}),
+            RejectionCode.INVALID_TIMESTAMP,
+        ),
+        (
+            "replay_time",
+            lambda data: data.update(replay_time=[]),
+            RejectionCode.INVALID_TIMESTAMP,
+        ),
+        (
+            "payload_type",
+            lambda data: data.update(payload_type={}),
+            RejectionCode.UNKNOWN_PAYLOAD_TYPE,
+        ),
+        ("payload", lambda data: data.update(payload=[]), RejectionCode.STRUCTURALLY_INVALID),
+        (
+            "payload.value",
+            lambda data: data["payload"].update(value={}),
+            RejectionCode.INVALID_VALUE,
+        ),
+        (
+            "payload.unit",
+            lambda data: data["payload"].update(unit=[]),
+            RejectionCode.INVALID_UNIT,
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_container_valued_fields_are_always_controlled_rejections(
+    field_name: str,
+    mutation: Any,
+    expected: RejectionCode,
+) -> None:
+    data = deepcopy(fixture_data())
+    assert callable(mutation), field_name
+    mutation(data)
+
     assert_rejected(data, expected)
 
 

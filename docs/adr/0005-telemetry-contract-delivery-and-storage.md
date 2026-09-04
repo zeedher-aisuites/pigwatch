@@ -37,6 +37,12 @@ semaphore. Saturation is observable and degrades readiness. Graceful shutdown st
 allows a bounded grace period, cancels the remainder, awaits cleanup to a finite deadline and only
 then allows the repository to be disposed.
 
+Count application capacity only while a delivery still requires durable processing. Release its
+slot immediately before the synchronous manual-ACK handoff, rather than waiting for task-callback
+cleanup. If an unexpected delivery nevertheless exceeds the negotiated bound, disconnect and
+restore the persistent session so the unacknowledged delivery remains eligible for broker
+redelivery; never silently drop it or create an unbounded queue.
+
 Keep ingestion in the existing API deployable as a modular-monolith background component. Do not
 introduce another operated service in M1.
 
@@ -51,7 +57,8 @@ timestamps and flag lateness or clock skew without reordering evidence.
 Before inserting a rejection, deterministically sanitize and bound topic, event-ID text and
 diagnostic detail. Retain bounded raw bytes plus SHA-256 of the complete raw message. Deterministic
 invalid input, including recursive duplicate JSON keys and pathological metadata, must commit and
-ACK rather than enter a poison retry loop.
+ACK rather than enter a poison retry loop. Manual validation must type-check arbitrary JSON values
+before membership or scalar parsing so container-valued fields follow that same rejection path.
 
 The actual broker-to-database at-least-once path begins only after successful SUBACK establishes the
 intended persistent consumer subscription, and remains subject to configured broker persistence,
@@ -99,7 +106,8 @@ versioned contracts, migrations and explicit architecture review.
 
 ## Follow-up
 
-- Product Owner review is required before this ADR becomes `Accepted`.
+- The Product Owner has approved this decision conceptually. Keep it `Proposed` until the final M1
+  implementation fixes pass independent verification.
 - Define production authentication, TLS, authorization, evidence retention, backup and recovery
   before any non-local deployment.
 - Reassess a durable producer outbox or edge buffer when real source reliability requirements are

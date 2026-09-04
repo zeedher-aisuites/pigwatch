@@ -3,8 +3,9 @@
 ## Status
 
 Implementation specification for M1. The architecture decisions introduced here are recorded in
-[ADR-0005](../adr/0005-telemetry-contract-delivery-and-storage.md), which remains `Proposed` until
-explicit Product Owner approval.
+[ADR-0005](../adr/0005-telemetry-contract-delivery-and-storage.md), which is conceptually approved
+by the Product Owner but remains `Proposed` until the final implementation fixes pass independent
+verification.
 
 ## Purpose
 
@@ -224,6 +225,12 @@ Control, ground-truth, health and dead-letter data must not use observation topi
 - The MQTT v5 CONNECT receive maximum bounds broker deliveries awaiting acknowledgement. A smaller
   application processing semaphore bounds concurrent PostgreSQL work; saturation degrades
   readiness and is logged.
+- Application capacity counts deliveries that still require durable application responsibility.
+  A durably settled slot is released immediately before its synchronous ACK handoff, independent
+  of later task-callback cleanup, so a broker replacement delivery can take ownership safely.
+- An unexpected delivery beyond the negotiated bound is never silently dropped. Ingestion marks
+  itself unready, disconnects and restores the persistent session after owned work settles, leaving
+  the overflow delivery unacknowledged and eligible for broker redelivery.
 - A valid message is acknowledged only after the PostgreSQL transaction commits.
 - An invalid message is acknowledged only after its rejection record commits.
 - A database failure leaves the message unacknowledged. Each persistence attempt has a 10-second
@@ -348,7 +355,9 @@ No missing value, unit, provenance or timestamp is fabricated. Topic, event-ID t
 detail and other database text are deterministically sanitized of non-printable characters and
 bounded before insertion. Rejection evidence retains bounded raw bytes plus SHA-256 of the complete
 raw message. Deterministic invalid input therefore commits once and is ACKed; dependency/persistence
-outages remain unacknowledged and retry.
+outages remain unacknowledged and retry. Manual prevalidation checks primitive JSON types before
+enum membership or UUID parsing, and malformed array/object values are always routed through the
+same controlled durable-rejection path.
 
 ## Reconnect and restart behavior
 
@@ -419,5 +428,7 @@ M1 is acceptable when automated tests and a local Compose smoke test demonstrate
 12. Docker images, Compose, Python, frontend and integration CI checks pass;
 13. recursive duplicate JSON keys and pathological rejection metadata reject durably;
 14. bounded processing concurrency and graceful shutdown are demonstrated;
-15. no M2 sensor generator, dashboard product feature or LLM dependency exists; and
-16. the working tree is clean after the review-ready commit.
+15. container-valued invalid fields reject durably, ACK and do not poison the consumer;
+16. ACK handoff cannot strand a replacement delivery at the receive limit;
+17. no M2 sensor generator, dashboard product feature or LLM dependency exists; and
+18. the working tree is clean after the review-ready commit.
