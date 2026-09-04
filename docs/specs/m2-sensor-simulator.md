@@ -96,6 +96,11 @@ invalid bounds, initial values outside bounds, invalid routing values, relative-
 outside 0 through 100, and negative ammonia bounds. Temperature has no simulator-imposed clinical
 range; all configured numbers must still be finite and M1-valid.
 
+MQTT connection settings independently require every timeout, delay, keepalive, session-expiry,
+and shutdown duration to be finite and greater than zero. This reusable boundary applies to CLI
+overrides as well as direct construction and rejects invalid values before any network resource is
+created.
+
 The repository contains a versioned development configuration with one source for each supported
 measurement. Its values are plausible test ranges only and must not be interpreted as healthy or
 unhealthy thresholds. Defaults are centralized and may be replaced with another validated JSON
@@ -115,15 +120,23 @@ There is no unit conversion and no new observation payload type.
 
 ## Value generation and bounds
 
-The first observation uses `initial_value`. Each later value is:
+The first observation uses `initial_value`. Each later value draws a normalized source-local sample
+`u` from `[0, 1)`, derives the signed sample `2u - 1`, and computes:
 
 ```text
-clamp(previous_value + uniform(-maximum_step, maximum_step), minimum_value, maximum_value)
+delta = (2u - 1) * maximum_step
+next = clamp(previous_value + delta, minimum_value, maximum_value)
 ```
 
 The pseudorandom generator is local to one source and seeded from its configuration. Sources do
 not share random state. Generated floats pass through the M1 typed payload constructor, which
 provides a second validation boundary. No NaN or infinity can be configured or emitted.
+
+The normalized sample avoids constructing a `2 * maximum_step` endpoint span. Candidate addition
+and clamping use an exact representation of the participating finite floats, so valid values near
+the IEEE-754 finite limits do not overflow during generation. The emitted representable value is
+always within the configured bounds and its actual step is at most `maximum_step`; if rounding
+offers no valid representable movement for an edge case, the previous value is retained.
 
 This bounded random walk is deliberately simple and is not a scientific model of a pig farm,
 sensor drift, environmental control, or animal response.
@@ -207,10 +220,13 @@ claiming that a cancelled publish succeeded. Publisher timeout and retry limits 
 
 ## Multi-source runner
 
-The runner validates a whole configuration before opening resources, starts one shared M1
-publisher, opens each source, and starts each source once. Static and periodic sources may coexist.
-An error from any source is propagated; cleanup requests stop for all other sources and then closes
-the publisher. A normal operator interrupt follows the same cleanup order.
+The runner independently rejects duplicate source IDs and duplicate normalized MQTT topic
+identities before opening the shared publisher, any source, or any task. This preserves the
+invariant even when callers construct the public runner directly rather than through
+`SimulatorConfiguration`. It then starts one shared M1 publisher, opens each source, and starts each
+source once. Static and periodic sources may coexist. An error from any source is propagated;
+cleanup requests stop for all other sources and then closes the publisher. A normal operator
+interrupt follows the same cleanup order.
 
 The development profile proves three independent sources—temperature, humidity, and NH3—with
 distinct IDs, seeds, and state.
@@ -228,6 +244,9 @@ broker-to-database delivery guarantee. M2 does not claim a durable producer outb
 ## Failure behavior
 
 - Invalid configuration fails before any MQTT connection or source task is started.
+- Invalid MQTT duration overrides fail with a nonzero structured CLI error before publisher
+  construction or network activity.
+- Duplicate runner source or normalized routing identities fail before publisher/source startup.
 - MQTT unavailability at startup and PUBACK retry exhaustion surface M1 `BrokerUnavailable`.
 - MQTT disconnection during publication uses M1's bounded reconnect/retry behavior.
 - A deterministic generation error fails the source once and is never retried forever.
@@ -276,13 +295,16 @@ Unit and contract tests cover:
 
 - valid and invalid configuration, including cadence and finite numeric rules;
 - fixed-seed reproducibility and different-seed divergence;
-- inclusive bounds and exact supported payload/unit mapping;
+- inclusive bounds, extreme finite-domain step safety, and exact supported payload/unit mapping;
 - deterministic UTC clocks and rejection of naive time;
 - `SYNTHETIC` + `LIVE` provenance and null replay/ingest times;
 - unique event IDs for genuine observations and exact identity/bytes across M1 retries;
 - static and periodic behavior, lifecycle transitions, duplicate-start prevention, stop during wait,
-  stop during publication, failures, and task cleanup; and
-- concurrent runner composition.
+  stop during publication, failures, and task cleanup;
+- direct runner identity validation before resource acquisition and concurrent valid composition;
+  and
+- finite positive MQTT duration validation, including structured CLI rejection without network
+  activity.
 
 Integration tests use real Mosquitto and PostgreSQL and cover all three measurements through the
 M1 path, concurrent sources, source/routing identity, event and ingest times, deterministic
@@ -301,7 +323,8 @@ M2 is acceptable when:
 5. event identity is unique between genuine readings and stable across publication retry;
 6. static mode emits once and periodic mode follows fixed-delay cadence;
 7. lifecycle transitions, failure propagation, graceful stop, and task cleanup are explicit;
-8. three independent configured sources may run concurrently;
+8. the public runner rejects duplicate source/routing identities before resource acquisition, and
+   three independent configured sources may run concurrently;
 9. real MQTT/PostgreSQL round trips preserve source, payload, unit, and event time while assigning
    ingest time;
 10. temporary broker interruption recovers within M1 semantics without duplicate durable rows;
