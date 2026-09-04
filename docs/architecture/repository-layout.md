@@ -4,7 +4,8 @@ PigWatch uses a monorepo so contracts, adapters, services, the dashboard, simula
 
 - `apps/` contains user-facing applications.
 - `services/` contains independently runnable backend processes.
-- `packages/` contains reusable code and stable seams; packages must not import applications or services.
+- `packages/` contains reusable code and stable seams, including the M1 telemetry package; packages
+  must not import applications or services.
 - `infra/` contains local infrastructure configuration, not production secrets.
 - `tests/` contains cross-package and contract tests; component-local tests may live with components.
 - `docs/` contains durable decisions and plans.

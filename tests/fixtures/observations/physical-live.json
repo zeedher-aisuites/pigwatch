@@ -1,0 +1,19 @@
+{
+  "event_id": "019941c8-3800-7000-8000-000000000003",
+  "schema_version": "1.0",
+  "source": {
+    "source_id": "fixture-physical-live",
+    "origin": "PHYSICAL",
+    "delivery": "LIVE"
+  },
+  "event_time": "2026-09-02T12:01:00Z",
+  "replay_time": null,
+  "ingest_time": null,
+  "payload_type": "environment.ammonia_concentration",
+  "payload": {
+    "value": 7.25,
+    "unit": "[ppm]"
+  },
+  "quality": null,
+  "trace": null
+}

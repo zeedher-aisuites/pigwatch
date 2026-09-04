@@ -27,6 +27,7 @@ services:
       - "127.0.0.1:${MQTT_WEBSOCKET_PORT:-9001}:9001"
     volumes:
       - ./infra/mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mqtt-data:/mosquitto/data
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/broker/version' -C 1 -W 3 >/dev/null"]
       interval: 10s
@@ -40,6 +41,10 @@ services:
       dockerfile: services/api/Dockerfile
     environment:
       PIGWATCH_ENVIRONMENT: ${PIGWATCH_ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pigwatch}:${POSTGRES_PASSWORD:-pigwatch-local-only}@postgres:5432/${POSTGRES_DB:-pigwatch}
+      MQTT_HOST: mqtt
+      MQTT_BROKER_PORT: 1883
+      MQTT_CONSUMER_CLIENT_ID: ${MQTT_CONSUMER_CLIENT_ID:-pigwatch-ingestion-v1}
     ports:
       - "${PIGWATCH_BIND_ADDRESS:-127.0.0.1}:${PIGWATCH_API_PORT:-8000}:8000"
     healthcheck:
@@ -48,11 +53,16 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')",
         ]
       interval: 10s
       timeout: 5s
       retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mqtt:
+        condition: service_healthy
     restart: unless-stopped
 
   dashboard:
@@ -68,3 +78,4 @@ services:
 
 volumes:
   postgres-data:
+  mqtt-data:

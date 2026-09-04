@@ -2,14 +2,17 @@
 
 PigWatch is a simulation-first livestock health monitoring platform. It is designed to detect and communicate physiological and behavioral anomalies; it is not an autonomous veterinary diagnostic system.
 
-This repository currently contains the **M0 engineering foundation only**. Product telemetry, sensor simulation, computer-vision pipelines, anomaly detection, alerts, and hardware integrations belong to later milestones.
+This repository contains the **M1 telemetry core** on top of the closed M0 foundation. Typed
+observations can travel through MQTT ingestion into PostgreSQL and be retrieved through the API.
+Sensor simulation, computer vision, anomaly detection, alerts, analytics and hardware integrations
+belong to later milestones.
 
 ## Repository layout
 
 ```text
 apps/dashboard/          React + TypeScript operator dashboard shell
 services/api/            FastAPI service and health endpoints
-packages/python/         Shared Python schemas, source contracts, and package seams
+packages/python/         Shared schemas, source contracts, telemetry, and future package seams
 infra/                   Local infrastructure configuration
 tests/                   Cross-package Python tests
 docs/                    Product, architecture, ADR, specification, and plan records
@@ -48,6 +51,7 @@ Compose has non-secret, loopback-only defaults so configuration, image builds, a
 Run the API:
 
 ```bash
+uv run alembic -c services/api/alembic.ini upgrade head
 uv run --package pigwatch-api uvicorn pigwatch_api.main:app --reload
 ```
 
@@ -67,15 +71,31 @@ uv run pytest
 npm run check
 ```
 
-Run the local stack after configuring `.env`:
+Run the local stack after configuring `.env`; the API container applies migrations before startup:
 
 ```bash
 docker compose up --build
 ```
 
-The dashboard is served at `http://localhost:5173`; API health endpoints are at `http://localhost:8000/health/live` and `/health/ready`.
+The dashboard is served at `http://localhost:5173`. API liveness is at
+`http://localhost:8000/health/live`; readiness at `/health/ready` returns HTTP 200 only when
+PostgreSQL is available, the MQTT consumer's intended QoS 1 subscription has received a successful
+SUBACK, and bounded ingestion capacity is available. Producers must wait for readiness before
+assuming the broker-to-database path exists. Minimal retrieval endpoints are:
 
-The initial Digital Farm is planned for M4 as a browser feature built with React, TypeScript, Three.js, and React Three Fiber. No 3D engine dependency or rendering behavior is included in M0.
+```text
+GET /v1/observations/{event_id}
+GET /v1/observations?source_id=...&payload_type=...&event_time_from=...&event_time_to=...
+```
+
+The MQTT observation topic is
+`pigwatch/v1/observations/{scope_kind}/{scope_id}/{source_id}/{category}` with QoS 1. The consumer
+ACKs only after a durable acceptance or rejection transaction. See
+[`docs/specs/m1-telemetry-core.md`](docs/specs/m1-telemetry-core.md) for the exact contract and actual
+delivery guarantee, including the explicit pre-subscription loss boundary.
+
+The initial Digital Farm is planned for M4 as a browser feature built with React, TypeScript,
+Three.js, and React Three Fiber. No 3D engine dependency or rendering behavior is included in M1.
 
 ## Product guardrail
 
@@ -83,4 +103,6 @@ PigWatch outputs must be framed as observations, anomaly indications, and decisi
 
 ## Roadmap
 
-M0 establishes tooling and boundaries. The next milestone, M1, is the telemetry core. The current milestone sequence lives in [docs/product/roadmap.md](docs/product/roadmap.md).
+M0 established tooling and boundaries. M1 implements the telemetry core. The current milestone
+sequence lives in [docs/product/roadmap.md](docs/product/roadmap.md); M2 sensor simulation has not
+started.
