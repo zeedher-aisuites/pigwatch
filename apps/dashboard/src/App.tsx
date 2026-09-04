@@ -11,6 +11,7 @@ import { ObservationTable } from "./components/ObservationTable";
 import { Summary } from "./components/Summary";
 import { SystemStatus } from "./components/SystemStatus";
 import { dashboardConfig } from "./config";
+import { DigitalFarm } from "./digital-farm/DigitalFarm";
 import {
   EMPTY_FILTERS,
   filterObservations,
@@ -22,6 +23,7 @@ import {
 import { useTelemetry } from "./useTelemetry";
 
 const systemNow = () => new Date();
+type AppView = "telemetry" | "farm";
 
 export interface AppProps {
   client?: ApiClient;
@@ -59,6 +61,7 @@ export function App({
   now = systemNow,
 }: AppProps) {
   const telemetry = useTelemetry(client, pollIntervalMs, now);
+  const [view, setView] = useState<AppView>("telemetry");
   const [filters, setFilters] = useState<ObservationFilters>(EMPTY_FILTERS);
   const [selectedObservation, setSelectedObservation] = useState<StoredObservation | null>(null);
   const currentTime = now();
@@ -88,6 +91,24 @@ export function App({
             <small>Operations</small>
           </span>
         </a>
+        <nav className="view-switcher" aria-label="Primary views">
+          <button
+            type="button"
+            className={view === "telemetry" ? "view-switcher__item view-switcher__item--active" : "view-switcher__item"}
+            aria-current={view === "telemetry" ? "page" : undefined}
+            onClick={() => setView("telemetry")}
+          >
+            Telemetry
+          </button>
+          <button
+            type="button"
+            className={view === "farm" ? "view-switcher__item view-switcher__item--active" : "view-switcher__item"}
+            aria-current={view === "farm" ? "page" : undefined}
+            onClick={() => setView("farm")}
+          >
+            Digital Farm
+          </button>
+        </nav>
         <div className="topbar__meta">
           <span className="read-only-label">
             <span aria-hidden="true">●</span> Read only
@@ -120,17 +141,32 @@ export function App({
       <main id="main-content" className="dashboard">
         <section className="page-intro" aria-labelledby="page-title">
           <div>
-            <p className="eyebrow">M3 · Telemetry console</p>
-            <h1 id="page-title">Operational evidence, clearly in view.</h1>
+            <p className="eyebrow">
+              {view === "telemetry" ? "M3 · Telemetry console" : "M4 · Interactive Digital Farm"}
+            </p>
+            <h1 id="page-title">
+              {view === "telemetry"
+                ? "Operational evidence, clearly in view."
+                : "Every reading, grounded in place."}
+            </h1>
             <p>
-              Inspect persisted environmental observations and ingestion readiness without health
-              interpretation.
+              {view === "telemetry"
+                ? "Inspect persisted environmental observations and ingestion readiness without health interpretation."
+                : "Explore where development sensors are presented and inspect their latest factual API evidence."}
             </p>
           </div>
           <div className="scope-card">
             <span>Current scope</span>
-            <strong>Newest {dashboardConfig.observationLimit} observations</strong>
-            <small>Polled every {Math.round(pollIntervalMs / 1_000)} seconds</small>
+            <strong>
+              {view === "telemetry"
+                ? `Newest ${dashboardConfig.observationLimit} observations`
+                : "Development farm · spatial sensors only"}
+            </strong>
+            <small>
+              {view === "telemetry"
+                ? `Polled every ${Math.round(pollIntervalMs / 1_000)} seconds`
+                : "Local placement + M1 API telemetry"}
+            </small>
           </div>
         </section>
 
@@ -165,28 +201,47 @@ export function App({
           )}
         </div>
 
-        {!telemetry.observationsLoaded ? (
-          <LoadingState />
-        ) : telemetry.observationError !== null && telemetry.observations.length === 0 ? (
-          <ErrorState message={telemetry.observationError} onRetry={() => void telemetry.refresh()} />
-        ) : telemetry.observations.length === 0 ? (
-          <EmptyState />
+        {view === "farm" ? (
+          <DigitalFarm
+            observations={telemetry.observations}
+            observationsLoaded={telemetry.observationsLoaded}
+            observationError={telemetry.observationError}
+            staleAfterMs={staleAfterMs}
+            now={currentTime}
+          />
         ) : (
-          <div className="telemetry-content">
-            <Summary observations={telemetry.observations} now={currentTime} />
-            <LatestReadings observations={telemetry.observations} now={currentTime} />
-            <Filters observations={telemetry.observations} filters={filters} onChange={setFilters} />
-            <HistoryChart observations={filteredObservations} />
-            {filteredObservations.length === 0 ? (
-              <FilteredEmptyState onReset={() => setFilters(EMPTY_FILTERS)} />
-            ) : (
-              <ObservationTable
-                observations={filteredObservations}
-                totalLoaded={telemetry.observations.length}
-                onSelect={setSelectedObservation}
+          <>
+            {!telemetry.observationsLoaded ? (
+              <LoadingState />
+            ) : telemetry.observationError !== null && telemetry.observations.length === 0 ? (
+              <ErrorState
+                message={telemetry.observationError}
+                onRetry={() => void telemetry.refresh()}
               />
+            ) : telemetry.observations.length === 0 ? (
+              <EmptyState />
+            ) : (
+              <div className="telemetry-content">
+                <Summary observations={telemetry.observations} now={currentTime} />
+                <LatestReadings observations={telemetry.observations} now={currentTime} />
+                <Filters
+                  observations={telemetry.observations}
+                  filters={filters}
+                  onChange={setFilters}
+                />
+                <HistoryChart observations={filteredObservations} />
+                {filteredObservations.length === 0 ? (
+                  <FilteredEmptyState onReset={() => setFilters(EMPTY_FILTERS)} />
+                ) : (
+                  <ObservationTable
+                    observations={filteredObservations}
+                    totalLoaded={telemetry.observations.length}
+                    onSelect={setSelectedObservation}
+                  />
+                )}
+              </div>
             )}
-          </div>
+          </>
         )}
       </main>
 
