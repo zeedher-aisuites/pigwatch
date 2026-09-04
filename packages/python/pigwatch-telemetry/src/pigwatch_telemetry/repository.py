@@ -139,6 +139,7 @@ class ObservationRepository(Protocol):
         event_time_from: datetime | None = None,
         event_time_to: datetime | None = None,
         payload_type: PayloadType | None = None,
+        descending: bool = False,
         limit: int = 100,
     ) -> Sequence[StoredObservation]: ...
 
@@ -304,6 +305,7 @@ class PostgresObservationRepository:
         event_time_from: datetime | None = None,
         event_time_to: datetime | None = None,
         payload_type: PayloadType | None = None,
+        descending: bool = False,
         limit: int = 100,
     ) -> Sequence[StoredObservation]:
         filters = []
@@ -318,9 +320,12 @@ class PostgresObservationRepository:
         statement = select(observations)
         if filters:
             statement = statement.where(and_(*filters))
-        statement = statement.order_by(observations.c.event_time, observations.c.event_id).limit(
-            limit
+        order_columns = (
+            (observations.c.event_time.desc(), observations.c.event_id.desc())
+            if descending
+            else (observations.c.event_time, observations.c.event_id)
         )
+        statement = statement.order_by(*order_columns).limit(limit)
         try:
             async with self._engine.connect() as connection:
                 rows = (await connection.execute(statement)).mappings().all()
