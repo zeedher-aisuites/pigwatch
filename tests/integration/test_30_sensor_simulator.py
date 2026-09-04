@@ -69,6 +69,29 @@ class FiniteAdvancingClock:
         await asyncio.sleep(0)
 
 
+class RecoveryClock:
+    """Pause before an outage reading, then allow a later post-recovery reading."""
+
+    def __init__(self, start: datetime) -> None:
+        self.current = start
+        self.first_wait_started = asyncio.Event()
+        self.release_outage_reading = asyncio.Event()
+        self.wait_count = 0
+
+    def now(self) -> datetime:
+        return self.current
+
+    async def wait(self, seconds: float, stop_requested: asyncio.Event) -> None:
+        self.wait_count += 1
+        self.current += timedelta(seconds=seconds)
+        if self.wait_count == 1:
+            self.first_wait_started.set()
+            await self.release_outage_reading.wait()
+        elif self.wait_count >= 3:
+            stop_requested.set()
+        await asyncio.sleep(0)
+
+
 class RecordingMqttPublisher:
     """Record simulator output while delegating every operation to the real M1 publisher."""
 
@@ -287,41 +310,58 @@ async def test_temporary_mqtt_outage_recovers_same_event_without_duplicate_row(
     mqtt_settings: MqttConnectionSettings,
 ) -> None:
     worker = await start_worker(postgres_repository, mqtt_settings)
-    publisher = MqttTelemetryPublisher(
-        mqtt_settings,
-        client_id=f"m2-recovery-publisher-{uuid4()}",
+    real_publisher = MqttTelemetryPublisher(
+        mqtt_settings, client_id=f"m2-recovery-publisher-{uuid4()}"
     )
+    publisher = RecordingMqttPublisher(real_publisher)
+    clock = RecoveryClock(datetime(2026, 9, 4, 13, tzinfo=UTC))
     source = EnvironmentalSensorSimulator(
-        config_for("m2-recovery-temperature", EnvironmentalMeasurement.TEMPERATURE, seed=404),
-        clock=FixedClock(datetime(2026, 9, 4, 13, tzinfo=UTC)),
+        config_for(
+            "m2-recovery-temperature",
+            EnvironmentalMeasurement.TEMPERATURE,
+            seed=404,
+            mode=SimulationMode.PERIODIC,
+        ),
+        clock=clock,
     )
-    await source.open()
-    envelope = source.next_observation()
-    await publisher.start()
-    assert await publisher.wait_until_connected(10)
+    runner = MultiSourceSimulatorRunner((source,), publisher)
+    runner_task = asyncio.create_task(runner.run())
     try:
+        await asyncio.wait_for(clock.first_wait_started.wait(), timeout=10)
+        assert len(publisher.calls) == 1
         await asyncio.to_thread(compose, "stop", "mqtt")
         await wait_until(lambda: not worker.is_connected)
-        await wait_until(lambda: not publisher.is_connected)
+        await wait_until(lambda: not real_publisher.is_connected)
 
-        publish_task = asyncio.create_task(publisher.publish(source.route, envelope))
-        await asyncio.sleep(0.25)
-        assert not publish_task.done()
+        clock.release_outage_reading.set()
+        await wait_until(lambda: len(publisher.calls) == 2)
+        assert not runner_task.done()
 
         await asyncio.to_thread(compose, "start", "mqtt")
         await wait_until(lambda: worker.is_ready, timeout=30)
-        await wait_until(lambda: publisher.is_connected, timeout=30)
-        await asyncio.wait_for(publish_task, timeout=30)
-        await wait_until(lambda: all_persisted(postgres_repository, [envelope]), timeout=30)
+        await asyncio.wait_for(runner_task, timeout=30)
+        envelopes = [envelope for _, envelope in publisher.calls]
+        await wait_until(lambda: all_persisted(postgres_repository, envelopes), timeout=30)
 
-        # Repeat the same immutable generated event to exercise M1's topic-aware idempotency.
-        await publisher.publish(source.route, envelope)
+        assert len(envelopes) == 3
+        assert envelopes[0].event_time < envelopes[1].event_time < envelopes[2].event_time
+        assert len({envelope.event_id for envelope in envelopes}) == 3
+
+        # Repeat the outage event to exercise M1's topic-aware idempotency with exact identity.
+        duplicate_publisher = MqttTelemetryPublisher(
+            mqtt_settings,
+            client_id=f"m2-duplicate-publisher-{uuid4()}",
+        )
+        await duplicate_publisher.publish(source.route, envelopes[1])
+        await duplicate_publisher.close()
         await asyncio.sleep(0.5)
-        assert await postgres_repository.count(envelope.event_id) == 1
+        for envelope in envelopes:
+            assert await postgres_repository.count(envelope.event_id) == 1
     finally:
         await asyncio.to_thread(compose, "start", "mqtt")
-        await source.close()
-        await publisher.close()
+        if not runner_task.done():
+            await runner.stop()
+            await runner_task
         await worker.close()
 
     assert source.state is SimulatorState.STOPPED
