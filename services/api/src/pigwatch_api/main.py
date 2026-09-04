@@ -136,6 +136,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
         event_time_from: AwareDatetime | None = None,
         event_time_to: AwareDatetime | None = None,
         payload_type: PayloadType | None = None,
+        order: Literal["asc", "desc"] = "asc",
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
     ) -> ObservationListResponse:
         if event_time_from is not None and event_time_to is not None:
@@ -150,6 +151,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
                 event_time_from=event_time_from,
                 event_time_to=event_time_to,
                 payload_type=payload_type,
+                descending=order == "desc",
                 limit=limit,
             )
         except PersistenceUnavailable as exc:

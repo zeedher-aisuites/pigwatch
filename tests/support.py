@@ -89,6 +89,7 @@ class MemoryObservationRepository:
         event_time_from: datetime | None = None,
         event_time_to: datetime | None = None,
         payload_type: PayloadType | None = None,
+        descending: bool = False,
         limit: int = 100,
     ) -> Sequence[StoredObservation]:
         if not self.available:
@@ -103,9 +104,11 @@ class MemoryObservationRepository:
             items = [item for item in items if item.envelope.event_time <= event_time_to]
         if payload_type is not None:
             items = [item for item in items if item.envelope.payload_type is payload_type]
-        return sorted(items, key=lambda item: (item.envelope.event_time, item.envelope.event_id))[
-            :limit
-        ]
+        return sorted(
+            items,
+            key=lambda item: (item.envelope.event_time, item.envelope.event_id),
+            reverse=descending,
+        )[:limit]
 
     async def healthcheck(self) -> bool:
         return self.available

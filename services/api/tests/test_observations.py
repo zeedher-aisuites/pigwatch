@@ -90,6 +90,25 @@ async def test_query_filters_by_source_payload_and_time() -> None:
 
 
 @pytest.mark.asyncio
+async def test_query_can_return_newest_observations_without_changing_default_order() -> None:
+    repository = MemoryObservationRepository()
+    for fixture_name in ("physical-live", "synthetic-live"):
+        wire = load_observation_fixture(fixture_name)
+        accepted = wire.accepted_at(datetime(2026, 9, 2, 16, tzinfo=UTC))
+        await repository.persist(normalized_for_test(accepted, "test-topic"))
+
+    _, ascending = await request(StubRuntime(repository), "/v1/observations")
+    _, descending = await request(StubRuntime(repository), "/v1/observations?order=desc")
+
+    ascending_items = ascending["items"]
+    descending_items = descending["items"]
+    assert isinstance(ascending_items, list)
+    assert isinstance(descending_items, list)
+    assert ascending_items[0]["envelope"]["source"]["source_id"] == "fixture-synthetic-live"
+    assert descending_items[0]["envelope"]["source"]["source_id"] == "fixture-physical-live"
+
+
+@pytest.mark.asyncio
 async def test_retrieval_handles_not_found_invalid_range_and_database_failure() -> None:
     repository = MemoryObservationRepository()
     runtime = StubRuntime(repository)
