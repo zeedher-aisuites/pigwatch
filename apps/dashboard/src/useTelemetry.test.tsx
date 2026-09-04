@@ -1,4 +1,5 @@
-import { act, render, screen } from "@testing-library/react";
+import { StrictMode } from "react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "./api/client";
@@ -100,6 +101,87 @@ describe("useTelemetry polling", () => {
       await vi.advanceTimersByTimeAsync(1);
     });
     expect(getObservations).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces manual refreshes into an active automatic request", async () => {
+    const first = deferred<ReturnType<typeof observationResponse>>();
+    const getObservations = vi
+      .fn<ApiClient["getObservations"]>()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(observationResponse([]));
+
+    render(<Probe client={clientWith(getObservations)} />);
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Manual" }));
+    expect(getObservations).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve(observationResponse([]));
+      await first.promise;
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(getObservations).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the completion-based cadence after a failed request", async () => {
+    const getObservations = vi
+      .fn<ApiClient["getObservations"]>()
+      .mockRejectedValue(new Error("temporary failure"));
+
+    render(<Probe client={clientWith(getObservations)} />);
+    await act(async () => undefined);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(999);
+    });
+    expect(getObservations).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(getObservations).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs only one persistent polling loop under StrictMode", async () => {
+    const getObservations = vi
+      .fn<ApiClient["getObservations"]>()
+      .mockResolvedValue(observationResponse([]));
+
+    render(
+      <StrictMode>
+        <Probe client={clientWith(getObservations)} />
+      </StrictMode>,
+    );
+    await act(async () => undefined);
+    expect(getObservations).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(getObservations).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it("ignores a response from a disposed client lifecycle", async () => {
+    const oldRequest = deferred<ReturnType<typeof observationResponse>>();
+    const oldClient = clientWith(vi.fn().mockReturnValue(oldRequest.promise));
+    const newClient = clientWith(
+      vi.fn().mockResolvedValue(observationResponse([makeObservation(), makeObservation()])),
+    );
+    const view = render(<Probe client={oldClient} />);
+    await act(async () => undefined);
+
+    view.rerender(<Probe client={newClient} />);
+    await act(async () => undefined);
+    expect(screen.getByTestId("calls-state").textContent).toBe("2");
+
+    await act(async () => {
+      oldRequest.resolve(observationResponse([makeObservation()]));
+      await oldRequest.promise;
+    });
+    expect(screen.getByTestId("calls-state").textContent).toBe("2");
   });
 
   it("skips background polls and refreshes when the page becomes visible", async () => {

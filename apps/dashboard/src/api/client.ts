@@ -48,8 +48,39 @@ function requireString(value: unknown, label: string): string {
 
 function requireTimestamp(value: unknown, label: string): string {
   const timestamp = requireString(value, label);
-  if (!Number.isFinite(Date.parse(timestamp))) {
-    throw new ApiRequestError(`${label} must be a valid timestamp`);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(
+    timestamp,
+  );
+  if (match === null) {
+    throw new ApiRequestError(`${label} must be a timezone-aware RFC 3339 timestamp`);
+  }
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, offset] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const offsetHour = offset === "Z" ? 0 : Number(offset.slice(1, 3));
+  const offsetMinute = offset === "Z" ? 0 : Number(offset.slice(4, 6));
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const monthLengths = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const daysInMonth = month >= 1 && month <= 12 ? monthLengths[month - 1] : 0;
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    offsetHour > 23 ||
+    offsetMinute > 59 ||
+    !Number.isFinite(Date.parse(timestamp))
+  ) {
+    throw new ApiRequestError(`${label} must be a valid timezone-aware RFC 3339 timestamp`);
   }
   return timestamp;
 }
@@ -196,7 +227,10 @@ function parseStoredObservation(value: unknown): StoredObservation {
   };
 }
 
-export function parseObservationList(value: unknown): ObservationListResponse {
+export function parseObservationList(
+  value: unknown,
+  requestedLimit = 500,
+): ObservationListResponse {
   const response = requireRecord(value, "observation response");
   if (!Array.isArray(response.items)) {
     throw new ApiRequestError("observation response items must be an array");
@@ -204,11 +238,21 @@ export function parseObservationList(value: unknown): ObservationListResponse {
   if (!Number.isInteger(response.count) || (response.count as number) < 0) {
     throw new ApiRequestError("observation response count must be a non-negative integer");
   }
-  const items = response.items.map(parseStoredObservation);
-  if (response.count !== items.length) {
+  const boundedLimit = Math.min(500, Math.max(1, Math.trunc(requestedLimit)));
+  const count = response.count as number;
+  if (response.items.length > 500 || count > 500) {
+    throw new ApiRequestError("observation response exceeds the absolute limit of 500 items");
+  }
+  if (response.items.length > boundedLimit || count > boundedLimit) {
+    throw new ApiRequestError(
+      `observation response exceeds the requested limit of ${boundedLimit} items`,
+    );
+  }
+  if (count !== response.items.length) {
     throw new ApiRequestError("observation response count does not match its items");
   }
-  return { items, count: response.count as number };
+  const items = response.items.map(parseStoredObservation);
+  return { items, count };
 }
 
 export function parseLiveness(value: unknown): LivenessResponse {
@@ -298,6 +342,7 @@ export function createApiClient(
     async getObservations(signal) {
       return parseObservationList(
         await get(`/v1/observations?limit=${boundedLimit}&order=desc`, signal),
+        boundedLimit,
       );
     },
   };

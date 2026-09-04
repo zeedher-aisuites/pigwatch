@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { makeObservation, observationResponse } from "../test/fixtures";
-import { ApiRequestError, createApiClient } from "./client";
+import { ApiRequestError, createApiClient, parseObservationList } from "./client";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -89,6 +89,84 @@ describe("PigWatch API client", () => {
     await expect(createApiClient("/api").getObservations()).rejects.toThrow(
       "envelope.payload.value must be finite",
     );
+  });
+
+  it("enforces the response-size contract before parsing observation items", () => {
+    const observation = makeObservation();
+
+    expect(parseObservationList(observationResponse([]), 10)).toEqual(observationResponse([]));
+    expect(parseObservationList(observationResponse([observation, observation]), 2).count).toBe(2);
+    expect(parseObservationList(observationResponse(Array(500).fill(observation)), 500).count).toBe(
+      500,
+    );
+    expect(() =>
+      parseObservationList(observationResponse(Array(501).fill(observation)), 500),
+    ).toThrow("observation response exceeds the absolute limit of 500 items");
+    expect(() =>
+      parseObservationList(observationResponse([observation, observation]), 1),
+    ).toThrow("observation response exceeds the requested limit of 1 items");
+    expect(() =>
+      parseObservationList({ items: [observation], count: 2 }, 2),
+    ).toThrow("observation response count does not match its items");
+  });
+
+  it.each([
+    "2026-09-04T12:00:00Z",
+    "2026-09-04T12:00:00.123456Z",
+    "2026-09-04T12:00:00+05:30",
+    "2026-09-04T12:00:00-06:00",
+  ])("accepts timezone-aware RFC 3339 timestamps: %s", (timestamp) => {
+    const observation = makeObservation({
+      delivery: "RECORDED",
+      eventTime: timestamp,
+      ingestTime: timestamp,
+      replayTime: timestamp,
+    });
+
+    expect(parseObservationList(observationResponse([observation]))).toEqual(
+      observationResponse([observation]),
+    );
+  });
+
+  it.each([
+    "2026-09-04",
+    "2026-09-04T12:00:00",
+    "2026-02-30T12:00:00Z",
+    "2026-09-04T12:00:00+24:00",
+    "Sep 4 2026 12:00:00 GMT",
+  ])("rejects non-RFC-3339 or invalid timestamps: %s", (timestamp) => {
+    expect(() =>
+      parseObservationList(observationResponse([makeObservation({ eventTime: timestamp })])),
+    ).toThrow(/timezone-aware RFC 3339 timestamp/);
+  });
+
+  it("validates ingest and replay timestamps with the same strict rules", () => {
+    expect(() =>
+      parseObservationList(
+        observationResponse([makeObservation({ ingestTime: "2026-09-04T12:00:01" })]),
+      ),
+    ).toThrow("envelope.ingest_time must be a timezone-aware RFC 3339 timestamp");
+    expect(() =>
+      parseObservationList(
+        observationResponse([
+          makeObservation({ delivery: "RECORDED", replayTime: "2026-09-04 12:00:30Z" }),
+        ]),
+      ),
+    ).toThrow("envelope.replay_time must be a timezone-aware RFC 3339 timestamp");
+  });
+
+  it("reports malformed JSON and network failures distinctly", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response("not-json", { status: 200 }))
+        .mockRejectedValueOnce(new TypeError("network down")),
+    );
+    const client = createApiClient("/api");
+
+    await expect(client.getObservations()).rejects.toThrow("PigWatch API returned invalid JSON");
+    await expect(client.getObservations()).rejects.toThrow("PigWatch API could not be reached");
   });
 
   it("propagates request cancellation", async () => {

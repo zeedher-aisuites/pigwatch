@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { apiClient, type ApiClient } from "./api/client";
 import type { StoredObservation } from "./api/types";
@@ -72,7 +73,11 @@ export function App({
   const closeDetail = useCallback(() => setSelectedObservation(null), []);
 
   return (
-    <div className="app-shell">
+    <div
+      className="app-shell"
+      inert={selectedObservation !== null ? true : undefined}
+      aria-hidden={selectedObservation !== null ? true : undefined}
+    >
       <header className="topbar">
         <a className="brand" href="#main-content" aria-label="PigWatch dashboard home">
           <span className="brand__mark" aria-hidden="true">
@@ -192,10 +197,11 @@ export function App({
         </p>
         <span>Origin and delivery provenance are shown independently.</span>
       </footer>
-
-      {selectedObservation !== null && (
-        <ObservationDetail observation={selectedObservation} onClose={closeDetail} />
-      )}
+      {selectedObservation !== null &&
+        createPortal(
+          <ObservationDetail observation={selectedObservation} onClose={closeDetail} />,
+          document.body,
+        )}
     </div>
   );
 }

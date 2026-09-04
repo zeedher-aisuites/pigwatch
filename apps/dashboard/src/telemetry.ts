@@ -39,31 +39,54 @@ export function seriesKey(observation: StoredObservation): string {
   return `${observation.envelope.source.source_id}\u0000${observation.envelope.payload_type}`;
 }
 
+export function compareObservationsAscending(
+  left: StoredObservation,
+  right: StoredObservation,
+): number {
+  const leftTime = Date.parse(left.envelope.event_time);
+  const rightTime = Date.parse(right.envelope.event_time);
+  if (leftTime < rightTime) {
+    return -1;
+  }
+  if (leftTime > rightTime) {
+    return 1;
+  }
+  if (left.envelope.event_id < right.envelope.event_id) {
+    return -1;
+  }
+  if (left.envelope.event_id > right.envelope.event_id) {
+    return 1;
+  }
+  return 0;
+}
+
+export function compareObservationsDescending(
+  left: StoredObservation,
+  right: StoredObservation,
+): number {
+  return compareObservationsAscending(right, left);
+}
+
 export function latestObservations(observations: StoredObservation[]): StoredObservation[] {
   const latest = new Map<string, StoredObservation>();
   for (const observation of observations) {
     const key = seriesKey(observation);
     const current = latest.get(key);
-    if (
-      current === undefined ||
-      Date.parse(observation.envelope.event_time) > Date.parse(current.envelope.event_time)
-    ) {
+    if (current === undefined || compareObservationsAscending(observation, current) > 0) {
       latest.set(key, observation);
     }
   }
-  return [...latest.values()].sort(
-    (left, right) => Date.parse(right.envelope.event_time) - Date.parse(left.envelope.event_time),
-  );
+  return [...latest.values()].sort(compareObservationsDescending);
 }
 
 export function newestEventTime(observations: StoredObservation[]): string | null {
-  let newest: string | null = null;
+  let newest: StoredObservation | null = null;
   for (const observation of observations) {
-    if (newest === null || Date.parse(observation.envelope.event_time) > Date.parse(newest)) {
-      newest = observation.envelope.event_time;
+    if (newest === null || compareObservationsAscending(observation, newest) > 0) {
+      newest = observation;
     }
   }
-  return newest;
+  return newest?.envelope.event_time ?? null;
 }
 
 export function filterObservations(
@@ -84,6 +107,13 @@ export function filterObservations(
 }
 
 export function formatValue(value: number): string {
+  const magnitude = Math.abs(value);
+  if (magnitude !== 0 && (magnitude >= 1_000_000_000 || magnitude < 0.001)) {
+    return value
+      .toExponential(6)
+      .replace(/(\.\d*?[1-9])0+e/, "$1e")
+      .replace(/\.0+e/, "e");
+  }
   return new Intl.NumberFormat("en", {
     maximumFractionDigits: 3,
     minimumFractionDigits: 0,

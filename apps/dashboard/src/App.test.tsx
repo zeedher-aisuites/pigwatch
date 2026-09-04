@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -123,6 +123,129 @@ describe("M3 dashboard", () => {
     expect(mqttCard?.textContent).toContain("Unavailable");
   });
 
+  it("lets current health failures override retained successful health", async () => {
+    const observation = makeObservation();
+    const client: ApiClient = {
+      getLiveness: vi
+        .fn()
+        .mockResolvedValueOnce(livenessReady)
+        .mockRejectedValueOnce(new Error("liveness endpoint unreachable")),
+      getReadiness: vi
+        .fn()
+        .mockResolvedValueOnce(dependenciesReady)
+        .mockRejectedValueOnce(new Error("readiness endpoint unreachable")),
+      getObservations: vi
+        .fn()
+        .mockResolvedValueOnce(observationResponse([observation]))
+        .mockRejectedValueOnce(new Error("PigWatch API could not be reached")),
+    };
+    const user = userEvent.setup();
+
+    render(<App client={client} now={fixedNow} />);
+    await screen.findByText("sim-temperature-1", { selector: "code" });
+    await user.click(await screen.findByRole("button", { name: "Refresh data" }));
+
+    const apiCard = screen.getByRole("heading", { name: "PigWatch API" }).closest("article");
+    const ingestionCard = screen
+      .getByRole("heading", { name: "Telemetry ingestion" })
+      .closest("article");
+    const postgresCard = screen.getByRole("heading", { name: "PostgreSQL" }).closest("article");
+    const mqttCard = screen.getByRole("heading", { name: "MQTT subscription" }).closest("article");
+    await waitFor(() => expect(apiCard?.textContent).toContain("Unavailable"));
+    expect(apiCard?.textContent).not.toContain("Last known · available");
+    expect(ingestionCard?.textContent).toContain("Last known · available");
+    expect(postgresCard?.textContent).toContain("Last known · available");
+    expect(mqttCard?.textContent).toContain("Last known · available");
+    expect(screen.getAllByText(/Current dependency state is unverified/)).toHaveLength(2);
+    expect(screen.getAllByText("sim-temperature-1").length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Showing last-known telemetry" })).toBeTruthy();
+  });
+
+  it("shows observations while initial health state is unavailable or unknown", async () => {
+    const client: ApiClient = {
+      getLiveness: vi.fn().mockRejectedValue(new Error("liveness endpoint unreachable")),
+      getReadiness: vi.fn().mockRejectedValue(new Error("readiness endpoint unreachable")),
+      getObservations: vi.fn().mockResolvedValue(observationResponse([makeObservation()])),
+    };
+
+    render(<App client={client} now={fixedNow} />);
+
+    await screen.findByText("sim-temperature-1", { selector: "code" });
+    expect(
+      screen.getByRole("heading", { name: "PigWatch API" }).closest("article")?.textContent,
+    ).toContain("Unavailable");
+    expect(
+      screen.getByRole("heading", { name: "Telemetry ingestion" }).closest("article")?.textContent,
+    ).toContain("Unknown");
+    expect(screen.getByRole("heading", { name: "PostgreSQL" }).closest("article")?.textContent).toContain(
+      "Unknown",
+    );
+  });
+
+  it("keeps fresh health visible when observations fail", async () => {
+    const client: ApiClient = {
+      getLiveness: vi.fn().mockResolvedValue(livenessReady),
+      getReadiness: vi.fn().mockResolvedValue(dependenciesReady),
+      getObservations: vi.fn().mockRejectedValue(new Error("observation storage unavailable")),
+    };
+
+    render(<App client={client} now={fixedNow} />);
+
+    await screen.findByRole("heading", { name: "Persisted telemetry could not be retrieved" });
+    expect(screen.getAllByText("Available")).toHaveLength(4);
+  });
+
+  it("moves from healthy to readiness 503 semantics without losing dependency detail", async () => {
+    const notReady: ReadinessResponse = {
+      status: "not_ready",
+      service: "pigwatch-api",
+      dependencies: { postgresql: true, mqtt: false },
+    };
+    const client: ApiClient = {
+      getLiveness: vi.fn().mockResolvedValue(livenessReady),
+      getReadiness: vi.fn().mockResolvedValueOnce(dependenciesReady).mockResolvedValueOnce(notReady),
+      getObservations: vi.fn().mockResolvedValue(observationResponse([])),
+    };
+    const user = userEvent.setup();
+
+    render(<App client={client} now={fixedNow} />);
+    await screen.findByRole("heading", { name: "No persisted observations yet" });
+    await user.click(screen.getByRole("button", { name: "Refresh data" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Telemetry ingestion is not ready" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "PostgreSQL" }).closest("article")?.textContent).toContain(
+      "Available",
+    );
+    expect(
+      screen.getByRole("heading", { name: "MQTT subscription" }).closest("article")?.textContent,
+    ).toContain("Unavailable");
+  });
+
+  it("replaces outage state with current health after recovery", async () => {
+    const client: ApiClient = {
+      getLiveness: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("liveness endpoint unreachable"))
+        .mockResolvedValueOnce(livenessReady),
+      getReadiness: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("readiness endpoint unreachable"))
+        .mockResolvedValueOnce(dependenciesReady),
+      getObservations: vi.fn().mockResolvedValue(observationResponse([])),
+    };
+    const user = userEvent.setup();
+
+    render(<App client={client} now={fixedNow} />);
+    await screen.findByRole("heading", { name: "System status is partially unavailable" });
+    await user.click(screen.getByRole("button", { name: "Refresh data" }));
+
+    await waitFor(() => expect(screen.queryByText("Unknown")).toBeNull());
+    expect(screen.queryByRole("heading", { name: "System status is partially unavailable" })).toBeNull();
+    expect(screen.getAllByText("Available")).toHaveLength(4);
+  });
+
   it("labels stale telemetry as a dashboard freshness policy", async () => {
     const oldObservation = makeObservation({ eventTime: "2026-09-04T11:55:00Z" });
 
@@ -195,7 +318,7 @@ describe("M3 dashboard", () => {
     expect(within(dialog).getByText(/confidence 0.7/)).toBeTruthy();
     expect(dialog.querySelector('time[datetime="2026-09-04T12:00:30Z"]')).toBeTruthy();
 
-    await user.keyboard("{Escape}");
+    await user.click(within(dialog).getByRole("button", { name: "Close observation detail" }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -214,6 +337,61 @@ describe("M3 dashboard", () => {
 
     await user.keyboard("{Escape}");
     expect(document.activeElement).toBe(inspect);
+  });
+
+  it("contains modal focus, protects the background, locks scrolling, and closes from its backdrop", async () => {
+    const user = userEvent.setup();
+
+    render(<App client={resolvedClient([makeObservation()])} now={fixedNow} />);
+    const inspect = await screen.findByRole("button", { name: /Inspect observation/ });
+    await user.click(inspect);
+
+    const close = screen.getByRole("button", { name: "Close observation detail" });
+    const background = document.querySelector(".app-shell");
+    expect(background?.hasAttribute("inert")).toBe(true);
+    expect(background?.getAttribute("aria-hidden")).toBe("true");
+    expect(document.body.style.overflow).toBe("hidden");
+
+    await user.tab();
+    expect(document.activeElement).toBe(close);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(close);
+    inspect.focus();
+    expect(document.activeElement).toBe(close);
+
+    fireEvent.mouseDown(document.querySelector(".dialog-backdrop") as HTMLElement);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.body.style.overflow).toBe("");
+    expect(document.activeElement).toBe(inspect);
+  });
+
+  it("renders opposing extreme values with bounded labels and finite chart coordinates", async () => {
+    const observations = [
+      makeObservation({ value: -1e308, eventTime: "2026-09-04T12:00:00Z" }),
+      makeObservation({
+        eventId: "0199483f-0200-7000-8000-000000000002",
+        value: 1e308,
+        eventTime: "2026-09-04T12:00:01Z",
+      }),
+    ];
+
+    render(<App client={resolvedClient(observations)} now={fixedNow} />);
+
+    const chart = await screen.findByRole("img", { name: /values -1e\+308 to 1e\+308 Cel/ });
+    expect(screen.getAllByText("1e+308").length).toBeGreaterThan(0);
+    expect(screen.getByText("-1e+308–1e+308 Cel")).toBeTruthy();
+    for (const point of chart.querySelectorAll("circle")) {
+      expect(Number.isFinite(Number(point.getAttribute("cx")))).toBe(true);
+      expect(Number.isFinite(Number(point.getAttribute("cy")))).toBe(true);
+    }
+    expect(document.body.textContent).not.toContain("NaN");
+    expect(document.body.textContent).not.toContain("Infinity");
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Inspect observation/ })[0]);
+    const dialog = screen.getByRole("dialog");
+    const machineValue = within(dialog).getByText("Machine value").parentElement;
+    expect(machineValue?.textContent).toContain(String(observations[0].envelope.payload.value));
+    expect(machineValue?.textContent).toContain("Cel");
   });
 
   it("preserves last-known observations after a later refresh failure", async () => {
@@ -256,6 +434,30 @@ describe("M3 dashboard", () => {
     expect(screen.getByText("21.5–22.4 Cel")).toBeTruthy();
     expect(screen.getByText(/Exact values remain in the table/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("danger zone");
+  });
+
+  it("keeps the latest card and chart aligned for equal event times", async () => {
+    const observations = [
+      makeObservation({
+        eventId: "0199483f-0200-7000-8000-000000000001",
+        value: 21,
+      }),
+      makeObservation({
+        eventId: "0199483f-0200-7000-8000-000000000002",
+        value: 22,
+      }),
+    ];
+
+    render(<App client={resolvedClient(observations)} now={fixedNow} />);
+
+    const latestSection = (await screen.findByRole("heading", { name: "Sensor readings" })).closest(
+      "section",
+    );
+    const historySection = screen.getByRole("heading", { name: "Loaded readings over time" }).closest(
+      "section",
+    );
+    expect(within(latestSection as HTMLElement).getByText("22")).toBeTruthy();
+    expect(within(historySection as HTMLElement).getByText("22 Cel")).toBeTruthy();
   });
 
   it("switches the history view between loaded source and measurement series", async () => {

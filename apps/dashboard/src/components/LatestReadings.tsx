@@ -48,7 +48,7 @@ export function LatestReadings({
                 </span>
               </div>
               <h3>{PAYLOAD_LABELS[envelope.payload_type]}</h3>
-              <p className="reading-card__value">
+              <p className="reading-card__value" title={String(envelope.payload.value)}>
                 {formatValue(envelope.payload.value)} <span>{envelope.payload.unit}</span>
               </p>
               <dl className="reading-card__metadata">

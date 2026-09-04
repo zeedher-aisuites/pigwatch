@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { StoredObservation } from "../api/types";
-import { formatTimestamp, formatValue, PAYLOAD_LABELS, seriesKey } from "../telemetry";
+import {
+  compareObservationsAscending,
+  formatTimestamp,
+  formatValue,
+  PAYLOAD_LABELS,
+  seriesKey,
+} from "../telemetry";
 
 interface Series {
   key: string;
@@ -31,14 +37,33 @@ function buildSeries(observations: StoredObservation[]): Series[] {
   return [...grouped.values()]
     .map((series) => ({
       ...series,
-      observations: series.observations.sort(
-        (left, right) => Date.parse(left.envelope.event_time) - Date.parse(right.envelope.event_time),
-      ),
+      observations: series.observations.sort(compareObservationsAscending),
     }))
     .sort((left, right) => left.source.localeCompare(right.source));
 }
 
-function plotPoints(series: Series): { points: { x: number; y: number; label: string }[]; min: number; max: number } {
+function normalizedValue(value: number, minimum: number, maximum: number): number {
+  if (minimum === maximum) {
+    return 0.5;
+  }
+
+  let position: number;
+  if (minimum < 0 && maximum > 0) {
+    const scale = Math.max(Math.abs(minimum), Math.abs(maximum));
+    const scaledMinimum = minimum / scale;
+    const scaledMaximum = maximum / scale;
+    position = (value / scale - scaledMinimum) / (scaledMaximum - scaledMinimum);
+  } else {
+    position = (value - minimum) / (maximum - minimum);
+  }
+  return Math.min(1, Math.max(0, Number.isFinite(position) ? position : 0.5));
+}
+
+function plotPoints(series: Series): {
+  points: { x: number; y: number; label: string }[];
+  min: number;
+  max: number;
+} {
   const width = 720;
   const height = 220;
   const horizontalPadding = 28;
@@ -50,7 +75,6 @@ function plotPoints(series: Series): { points: { x: number; y: number; label: st
   const minimumValue = Math.min(...values);
   const maximumValue = Math.max(...values);
   const timeSpan = maximumTime - minimumTime;
-  const valueSpan = maximumValue - minimumValue;
   const points = series.observations.map((item, index) => {
     const value = values[index];
     const time = times[index];
@@ -59,11 +83,9 @@ function plotPoints(series: Series): { points: { x: number; y: number; label: st
         ? width / 2
         : horizontalPadding + ((time - minimumTime) / timeSpan) * (width - horizontalPadding * 2);
     const y =
-      valueSpan === 0
-        ? height / 2
-        : height -
-          verticalPadding -
-          ((value - minimumValue) / valueSpan) * (height - verticalPadding * 2);
+      height -
+      verticalPadding -
+      normalizedValue(value, minimumValue, maximumValue) * (height - verticalPadding * 2);
     return {
       x,
       y,
@@ -136,13 +158,13 @@ function PointPlot({ series }: { series: Series }) {
         <dl>
           <div>
             <dt>Latest</dt>
-            <dd>
+            <dd title={String(latest.envelope.payload.value)}>
               {formatValue(latest.envelope.payload.value)} {series.unit}
             </dd>
           </div>
           <div>
             <dt>Loaded range</dt>
-            <dd>
+            <dd title={`${String(min)} to ${String(max)}`}>
               {formatValue(min)}–{formatValue(max)} {series.unit}
             </dd>
           </div>

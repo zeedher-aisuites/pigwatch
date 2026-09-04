@@ -21,6 +21,7 @@ export function ObservationDetail({
   observation: StoredObservation;
   onClose: () => void;
 }) {
+  const dialog = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const { envelope } = observation;
@@ -28,15 +29,54 @@ export function ObservationDetail({
   useEffect(() => {
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeButton.current?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        event.preventDefault();
         onClose();
+        return;
+      }
+      if (event.key !== "Tab" || dialog.current === null) {
+        return;
+      }
+      const focusable = [
+        ...dialog.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((element) => element.getAttribute("aria-hidden") !== "true");
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.current.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialog.current.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (document.activeElement === last || !dialog.current.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      if (dialog.current && !dialog.current.contains(event.target as Node)) {
+        closeButton.current?.focus();
       }
     };
     document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("focusin", onFocusIn);
     return () => {
       document.removeEventListener("keydown", onKeyDown);
-      returnFocus.current?.focus();
+      document.removeEventListener("focusin", onFocusIn);
+      document.body.style.overflow = previousOverflow;
+      if (returnFocus.current?.isConnected) {
+        returnFocus.current.focus();
+      }
     };
   }, [onClose]);
 
@@ -51,8 +91,10 @@ export function ObservationDetail({
       }}
     >
       <section
+        ref={dialog}
         className="detail-dialog"
         role="dialog"
+        tabIndex={-1}
         aria-modal="true"
         aria-labelledby="detail-title"
         aria-describedby="detail-description"
@@ -70,7 +112,7 @@ export function ObservationDetail({
         </header>
 
         <div className="detail-dialog__reading">
-          <p>
+          <p title={String(envelope.payload.value)}>
             {formatValue(envelope.payload.value)} <span>{envelope.payload.unit}</span>
           </p>
           <Provenance origin={envelope.source.origin} delivery={envelope.source.delivery} />
@@ -89,6 +131,9 @@ export function ObservationDetail({
               <DetailRow label="Schema version">{envelope.schema_version}</DetailRow>
               <DetailRow label="Payload type">
                 <code>{envelope.payload_type}</code>
+              </DetailRow>
+              <DetailRow label="Machine value">
+                <code>{String(envelope.payload.value)}</code> {envelope.payload.unit}
               </DetailRow>
               <DetailRow label="MQTT topic">
                 <code>{observation.topic}</code>

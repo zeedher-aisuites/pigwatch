@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -106,6 +107,35 @@ async def test_query_can_return_newest_observations_without_changing_default_ord
     assert isinstance(descending_items, list)
     assert ascending_items[0]["envelope"]["source"]["source_id"] == "fixture-synthetic-live"
     assert descending_items[0]["envelope"]["source"]["source_id"] == "fixture-physical-live"
+
+
+@pytest.mark.asyncio
+async def test_query_reverses_event_id_ties_with_the_requested_order() -> None:
+    repository = MemoryObservationRepository()
+    event_time = datetime(2026, 9, 2, 12, tzinfo=UTC)
+    event_ids = [
+        UUID("0199483f-0200-7000-8000-000000000001"),
+        UUID("0199483f-0200-7000-8000-000000000002"),
+    ]
+    base = load_observation_fixture("synthetic-live")
+    for event_id in reversed(event_ids):
+        wire = base.model_copy(update={"event_id": event_id, "event_time": event_time})
+        accepted = wire.accepted_at(datetime(2026, 9, 2, 16, tzinfo=UTC))
+        await repository.persist(normalized_for_test(accepted, "test-topic"))
+
+    _, ascending = await request(StubRuntime(repository), "/v1/observations?order=asc")
+    _, descending = await request(StubRuntime(repository), "/v1/observations?order=desc")
+
+    ascending_items = ascending["items"]
+    descending_items = descending["items"]
+    assert isinstance(ascending_items, list)
+    assert isinstance(descending_items, list)
+    assert [item["envelope"]["event_id"] for item in ascending_items] == [
+        str(event_id) for event_id in event_ids
+    ]
+    assert [item["envelope"]["event_id"] for item in descending_items] == [
+        str(event_id) for event_id in reversed(event_ids)
+    ]
 
 
 @pytest.mark.asyncio

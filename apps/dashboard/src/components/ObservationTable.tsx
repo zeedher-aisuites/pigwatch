@@ -53,7 +53,10 @@ export function ObservationTable({
                     <span className="measurement-name">{PAYLOAD_LABELS[envelope.payload_type]}</span>
                     <small>{envelope.payload_type}</small>
                   </td>
-                  <td className="numeric-cell observation-value">
+                  <td
+                    className="numeric-cell observation-value"
+                    title={String(envelope.payload.value)}
+                  >
                     {formatValue(envelope.payload.value)} <small>{envelope.payload.unit}</small>
                   </td>
                   <td>

@@ -407,6 +407,13 @@ code {
   box-shadow: 0 0 0 1px var(--red);
 }
 
+.status-dot--last-known-available,
+.status-dot--last-known-unavailable,
+.status-dot--unknown {
+  background: var(--faint);
+  box-shadow: 0 0 0 1px var(--faint);
+}
+
 .status-badge {
   display: inline-flex;
   width: fit-content;
@@ -796,6 +803,8 @@ select {
 }
 
 .plot-copy dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
   margin: 0;
   color: #31433b;
   font-family: var(--mono);
@@ -1137,6 +1146,7 @@ td > small {
 }
 
 .detail-dialog__reading > p {
+  overflow-wrap: anywhere;
   margin: 0 0 0.9rem;
   color: var(--forest);
   font-family: var(--mono);
