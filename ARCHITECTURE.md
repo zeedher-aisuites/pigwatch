@@ -6,7 +6,9 @@ PigWatch collects livestock observations, detects physiological, environmental, 
 
 M0 established boundaries and development tooling. M1 adds typed observation transport,
 validation, MQTT ingestion, PostgreSQL persistence and minimal retrieval. M2 adds deterministic
-synthetic environmental sources that use that accepted path. It intentionally contains no animal
+synthetic environmental sources that use that accepted path. M3 adds a read-only operator dashboard
+over the M1 API with system status, bounded telemetry presentation, factual freshness, filtering,
+detail, and discrete historical visualization. These milestones intentionally contain no animal
 behavior or physiology, simulation ground truth ingestion, vision pipeline, Digital Farm rendering,
 anomaly engine, alerting, prediction or veterinary retrieval behavior.
 
@@ -20,9 +22,9 @@ PigWatch begins as a modular monolith in a monorepo. Clear package and service s
 
 ## Major components
 
-| Component | Responsibility | M0 location |
+| Component | Responsibility | Location |
 | --- | --- | --- |
-| Dashboard | React/TypeScript operator shell; dashboard and browser Digital Farm arrive in M3/M4 | `apps/dashboard` |
+| Dashboard | React/TypeScript read-only M3 telemetry view; browser Digital Farm arrives in M4 | `apps/dashboard` |
 | API | FastAPI health/retrieval boundary and in-process telemetry worker | `services/api` |
 | Shared schemas | Versioned, transport-neutral vocabulary and provenance | `packages/python/pigwatch-schemas` |
 | Source contracts | Lifecycle shared by source adapters without universal acquisition semantics | `packages/python/pigwatch-sources` |
@@ -84,6 +86,30 @@ created before publication; the immutable envelope is reused by M1 for PUBACK re
 does not add a retry layer, durable outbox, database state, direct ingestion call, recorded replay,
 or simulation ground-truth contract. Exact behavior is specified in
 [`docs/specs/m2-sensor-simulator.md`](docs/specs/m2-sensor-simulator.md).
+
+## M3 basic dashboard
+
+M3 consumes only the M1 HTTP boundary. Its typed TypeScript client validates liveness, readiness,
+and observation responses before they enter React state. The dashboard server proxies a relative
+`/api` path to the API in both Vite development and the Nginx Compose image, so the browser never
+connects to PostgreSQL or MQTT and no permissive cross-origin API policy is required.
+
+The existing observation query retains its ascending default and adds optional `order=desc` so a
+bounded caller can retrieve the newest evidence truthfully. M3 requests 200 observations by default,
+within M1's 500-row maximum. Source, measurement, and time filtering operate over that bounded
+client result; no analytics or aggregate endpoint is introduced.
+
+One local hook owns liveness, readiness, observations, errors, retained last-known data, and
+completion-scheduled polling. Requests do not overlap. Timers and active requests are cleaned on
+unmount, and scheduled requests pause while the document is hidden. A 60-second default freshness
+policy compares the newest loaded event time with the browser clock and is explicitly presentation
+policy rather than biological meaning.
+
+Presentation keeps `SYNTHETIC`/`PHYSICAL` origin separate from `LIVE`/`RECORDED` delivery in latest
+readings, the observation list, and detail. A dependency-free SVG uses discrete actual points for a
+single source/measurement/unit series; exact values remain in the table. No inferred state,
+threshold, anomaly, health, spatial, 3D, or M4 behavior exists. Exact behavior is specified in
+[`docs/specs/m3-basic-dashboard.md`](docs/specs/m3-basic-dashboard.md).
 
 ## Source provenance
 

@@ -202,9 +202,10 @@ discarding fields. The detail dialog becomes a full-height bottom-aligned surfac
 ## Performance limits
 
 The client loads 200 observations by default and never requests more than M1's 500-row cap.
-Summary, latest-reading, filter option, and chart-series derivations are memoized from the loaded
-array and active filters. The SVG plots at most the bounded loaded result. No global state library,
-streaming connection, analytics store, or speculative M4 abstraction is introduced.
+Derivations are bounded linear passes over the loaded result, and the filtered result and chart
+series use local memoization where it avoids repeated work. The SVG plots at most the bounded
+loaded result. No global state library, streaming connection, analytics store, or speculative M4
+abstraction is introduced.
 
 ## Polling cleanup
 
