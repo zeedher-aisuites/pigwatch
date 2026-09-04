@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -292,6 +293,42 @@ def route() -> TopicRoute:
         source_id="fixture-synthetic-live",
         category=ObservationCategory.TEMPERATURE,
     )
+
+
+@pytest.mark.parametrize("invalid", [math.nan, math.inf, -math.inf, 0.0, -1.0])
+def test_mqtt_settings_reject_non_finite_or_non_positive_timeout(invalid: float) -> None:
+    with pytest.raises(ValueError, match="connect_timeout_seconds"):
+        MqttConnectionSettings(connect_timeout_seconds=invalid)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "keepalive_seconds",
+        "connect_timeout_seconds",
+        "publish_timeout_seconds",
+        "session_expiry_seconds",
+        "persistence_attempt_timeout_seconds",
+        "persistence_retry_initial_seconds",
+        "persistence_retry_max_seconds",
+        "shutdown_grace_seconds",
+        "shutdown_timeout_seconds",
+    ],
+)
+def test_every_mqtt_duration_rejects_non_finite_values(field: str) -> None:
+    values = cast(Any, {field: math.nan})
+    with pytest.raises(ValueError, match=field):
+        MqttConnectionSettings(**values)
+
+
+def test_mqtt_settings_accept_valid_finite_timeouts() -> None:
+    settings = MqttConnectionSettings(
+        connect_timeout_seconds=0.01,
+        publish_timeout_seconds=120.0,
+    )
+
+    assert settings.connect_timeout_seconds == 0.01
+    assert settings.publish_timeout_seconds == 120.0
 
 
 @pytest.mark.asyncio

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from datetime import UTC, datetime, timedelta, timezone
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, cast
 
@@ -31,6 +33,7 @@ from pigwatch_simulation import (
     SimulatorConfiguration,
     SimulatorState,
 )
+from pigwatch_simulation import cli as simulator_cli
 from pigwatch_sources import SourceLifecycle
 from pigwatch_telemetry import (
     BrokerUnavailable,
@@ -358,6 +361,66 @@ async def test_random_walk_is_bounded_and_finite() -> None:
 
 
 @pytest.mark.parametrize(
+    ("initial", "minimum", "maximum"),
+    [
+        (5.0e307, 0.0, 1.0e308),
+        (-1.0e308, -1.0e308, 1.0e308),
+        (-1.0e308, -1.7e308, -1.0e308),
+    ],
+)
+@pytest.mark.asyncio
+async def test_extreme_finite_random_walk_preserves_bounds_and_maximum_step(
+    initial: float,
+    minimum: float,
+    maximum: float,
+) -> None:
+    maximum_step = 1.0e308
+    source = EnvironmentalSensorSimulator(
+        sensor_config(
+            seed=1,
+            initial_value=initial,
+            minimum_value=minimum,
+            maximum_value=maximum,
+            maximum_step=maximum_step,
+        ),
+        clock=FixedClock(),
+    )
+    await source.open()
+    previous = source.next_observation().payload.value
+
+    for _ in range(250):
+        current = source.next_observation().payload.value
+        assert math.isfinite(current)
+        assert minimum <= current <= maximum
+        safe_step = abs(Fraction.from_float(current) - Fraction.from_float(previous))
+        assert safe_step <= Fraction.from_float(maximum_step)
+        previous = current
+
+
+@pytest.mark.asyncio
+async def test_extreme_finite_sequence_remains_deterministic() -> None:
+    config = sensor_config(
+        seed=1,
+        initial_value=-1.0e308,
+        minimum_value=-1.0e308,
+        maximum_value=1.0e308,
+        maximum_step=1.0e308,
+    )
+    first = EnvironmentalSensorSimulator(config, clock=FixedClock())
+    second = EnvironmentalSensorSimulator(config, clock=FixedClock())
+    await first.open()
+    await second.open()
+
+    first_sequence = [first.next_observation() for _ in range(20)]
+    second_sequence = [second.next_observation() for _ in range(20)]
+
+    assert first_sequence == second_sequence
+    assert [serialize_observation(item) for item in first_sequence] == [
+        serialize_observation(item) for item in second_sequence
+    ]
+
+
+@pytest.mark.parametrize(
     ("measurement", "initial", "minimum", "maximum", "payload_class", "unit"),
     [
         (
@@ -579,6 +642,58 @@ async def test_three_static_sources_publish_concurrently_and_cleanup() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runner_rejects_duplicate_source_id_before_opening_resources() -> None:
+    sources = (
+        EnvironmentalSensorSimulator(
+            sensor_config(source_id="duplicate-source"),
+            clock=FixedClock(),
+        ),
+        EnvironmentalSensorSimulator(
+            sensor_config(
+                source_id="duplicate-source",
+                measurement=EnvironmentalMeasurement.RELATIVE_HUMIDITY,
+            ),
+            clock=FixedClock(),
+        ),
+    )
+    publisher = RecordingPublisher()
+    runner = MultiSourceSimulatorRunner(sources, publisher)
+
+    with pytest.raises(ValueError, match="duplicate source_id values: duplicate-source"):
+        await runner.start()
+
+    assert not publisher.started
+    assert not publisher.closed
+    assert all(source.state is SimulatorState.CREATED for source in sources)
+    assert all(source.task is None for source in sources)
+
+
+@pytest.mark.asyncio
+async def test_runner_rejects_duplicate_routing_identity_before_opening_resources() -> None:
+    duplicate_config = sensor_config(source_id="duplicate-route")
+    sources = (
+        EnvironmentalSensorSimulator(duplicate_config, clock=FixedClock()),
+        EnvironmentalSensorSimulator(duplicate_config, clock=FixedClock()),
+    )
+    publisher = RecordingPublisher()
+    runner = MultiSourceSimulatorRunner(sources, publisher)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "duplicate routing identities: "
+            "pigwatch/v1/observations/site/test-site/duplicate-route/temperature"
+        ),
+    ):
+        await runner.start()
+
+    assert not publisher.started
+    assert not publisher.closed
+    assert all(source.state is SimulatorState.CREATED for source in sources)
+    assert all(source.task is None for source in sources)
+
+
+@pytest.mark.asyncio
 async def test_generated_event_keeps_exact_identity_and_bytes_across_m1_retry() -> None:
     source = EnvironmentalSensorSimulator(sensor_config(), clock=FixedClock())
     await source.open()
@@ -601,3 +716,36 @@ async def test_generated_event_keeps_exact_identity_and_bytes_across_m1_retry() 
     assert [
         ObservationEnvelopeV1.model_validate_json(payload).event_id for payload in fake.payloads
     ] == [envelope.event_id, envelope.event_id]
+
+
+@pytest.mark.parametrize("invalid_timeout", [math.nan, math.inf, -math.inf, 0.0, -1.0])
+def test_cli_invalid_timeout_is_structured_and_opens_no_mqtt_resources(
+    invalid_timeout: float,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    publisher_constructed = False
+
+    def unexpected_publisher(*args: object, **kwargs: object) -> Any:
+        nonlocal publisher_constructed
+        del args, kwargs
+        publisher_constructed = True
+        raise AssertionError("publisher must not be constructed for invalid settings")
+
+    monkeypatch.setattr(simulator_cli, "MqttTelemetryPublisher", unexpected_publisher)
+
+    result = simulator_cli.main(
+        [
+            "--config",
+            str(REPOSITORY_ROOT / "configs" / "simulator.development.json"),
+            f"--connect-timeout={invalid_timeout}",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert not publisher_constructed
+    assert "Traceback" not in captured.err
+    error = json.loads(captured.err.strip())
+    assert error["event"] == "sensor_simulator_command_failed"
+    assert error["exception"] == "ValueError"

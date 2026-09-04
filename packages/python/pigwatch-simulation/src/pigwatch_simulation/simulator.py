@@ -8,6 +8,7 @@ import logging
 import random
 from datetime import UTC, datetime
 from enum import StrEnum
+from fractions import Fraction
 from typing import Protocol
 
 from pigwatch_schemas import (
@@ -173,14 +174,31 @@ class EnvironmentalSensorSimulator:
         if self._current_value is None:
             self._current_value = self.config.initial_value
             return self._current_value
-        variation = self._value_random.uniform(
-            -self.config.maximum_step,
-            self.config.maximum_step,
-        )
-        self._current_value = min(
+
+        # random.uniform(-step, step) forms an endpoint span of 2 * step, which can
+        # overflow even though step itself is finite. Scale a normalized finite sample
+        # instead, then clamp in exact float-rational space so intermediate addition and
+        # subtraction cannot overflow at the edges of the IEEE-754 finite domain.
+        signed_unit_sample = self._value_random.random() * 2.0 - 1.0
+        variation = signed_unit_sample * self.config.maximum_step
+        current = Fraction.from_float(self._current_value)
+        candidate = current + Fraction.from_float(variation)
+        minimum = Fraction.from_float(self.config.minimum_value)
+        maximum = Fraction.from_float(self.config.maximum_value)
+        bounded = min(maximum, max(minimum, candidate))
+        next_value = min(
             self.config.maximum_value,
-            max(self.config.minimum_value, self._current_value + variation),
+            max(self.config.minimum_value, float(bounded)),
         )
+
+        # Float quantization can otherwise round a tiny mathematical change to a
+        # representable jump larger than maximum_step. Holding the previous value is the
+        # only valid representable result in that edge case.
+        actual_step = abs(Fraction.from_float(next_value) - current)
+        if actual_step > Fraction.from_float(self.config.maximum_step):
+            next_value = self._current_value
+
+        self._current_value = next_value
         return self._current_value
 
     async def start(self, publisher: ObservationPublisher) -> None:
