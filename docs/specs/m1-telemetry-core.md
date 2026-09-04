@@ -360,7 +360,11 @@ outages remain unacknowledged and retry. Manual prevalidation checks primitive J
 enum membership or UUID parsing, and malformed array/object values are always routed through the
 same controlled durable-rejection path. Excessive nesting is handled at the JSON decode and typed
 validation boundaries without recursively walking the malicious structure; parser recursion
-failures become `JSON_NESTING_TOO_DEEP` and retain the original bounded raw evidence.
+failures become `JSON_NESTING_TOO_DEEP` and retain the original bounded raw evidence. Pydantic
+exposes its lower JSON parser nesting ceiling as the broad structured type `json_invalid`, with the
+specific reason in `ctx.error`; PigWatch maps only that type whose reason begins
+`recursion limit exceeded` to the nesting code. Other structural and JSON failures retain their
+existing classifications.
 
 ## Reconnect and restart behavior
 

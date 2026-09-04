@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
@@ -29,9 +30,10 @@ class _DuplicateJsonKeyError(ValueError):
 _SOURCE_ORIGINS = frozenset(item.value for item in SourceOrigin)
 _SOURCE_DELIVERIES = frozenset(item.value for item in SourceDelivery)
 _PAYLOAD_TYPES = frozenset(item.value for item in PayloadType)
+_PYDANTIC_JSON_RECURSION_PREFIX = "recursion limit exceeded"
 
 
-def _reject_excessive_json_nesting(exc: RecursionError) -> TelemetryValidationError:
+def _reject_excessive_json_nesting() -> TelemetryValidationError:
     return TelemetryValidationError(
         RejectionCode.JSON_NESTING_TOO_DEEP,
         "message JSON nesting exceeds the supported parser depth",
@@ -156,8 +158,26 @@ def _prevalidate(data: dict[str, Any]) -> str | None:
     return event_id_text
 
 
-def _classify_validation_error(exc: ValidationError) -> RejectionCode:
-    first = exc.errors(include_url=False)[0]
+def _is_pydantic_json_nesting_error(error: Mapping[str, Any]) -> bool:
+    """Recognize pydantic-core's structured JSON parser recursion failure.
+
+    Pydantic exposes no narrower machine-readable subtype than ``json_invalid``. Its structured
+    ``ctx.error`` value adds the parser-specific reason, so match only the stable reason prefix
+    instead of the rendered ValidationError message or all JSON parse failures.
+    """
+
+    if error.get("type") != "json_invalid":
+        return False
+    context = error.get("ctx")
+    if not isinstance(context, Mapping):
+        return False
+    parser_error = context.get("error")
+    return isinstance(parser_error, str) and parser_error.startswith(
+        _PYDANTIC_JSON_RECURSION_PREFIX
+    )
+
+
+def _classify_validation_error(first: Mapping[str, Any]) -> RejectionCode:
     location = tuple(str(part) for part in first["loc"])
     if first["type"] == "missing":
         return RejectionCode.STRUCTURALLY_INVALID
@@ -181,7 +201,7 @@ def decode_observation(raw_message: bytes) -> ObservationEnvelopeV1:
     try:
         decoded = json.loads(raw_message, object_pairs_hook=_reject_duplicate_keys)
     except RecursionError as exc:
-        raise _reject_excessive_json_nesting(exc) from exc
+        raise _reject_excessive_json_nesting() from exc
     except _DuplicateJsonKeyError as exc:
         raise TelemetryValidationError(
             RejectionCode.DUPLICATE_JSON_KEY,
@@ -203,7 +223,7 @@ def decode_observation(raw_message: bytes) -> ObservationEnvelopeV1:
     except TelemetryValidationError:
         raise
     except RecursionError as exc:
-        raise _reject_excessive_json_nesting(exc) from exc
+        raise _reject_excessive_json_nesting() from exc
     except (KeyError, TypeError, ValueError) as exc:
         # Keep deterministic invalid JSON shapes on the durable rejection path even if a
         # future manual prevalidation rule accidentally assumes a scalar or object value.
@@ -217,14 +237,16 @@ def decode_observation(raw_message: bytes) -> ObservationEnvelopeV1:
         # rejecting dangerous Python-side coercions such as numeric strings and booleans.
         return ObservationEnvelopeV1.model_validate_json(raw_message, strict=True)
     except RecursionError as exc:
-        raise _reject_excessive_json_nesting(exc) from exc
+        raise _reject_excessive_json_nesting() from exc
     except ValidationError as exc:
         try:
             first = exc.errors(include_url=False)[0]
+            if _is_pydantic_json_nesting_error(first):
+                raise _reject_excessive_json_nesting() from exc
             location = ".".join(str(part) for part in first["loc"])
-            code = _classify_validation_error(exc)
+            code = _classify_validation_error(first)
         except RecursionError as recursion_exc:
-            raise _reject_excessive_json_nesting(recursion_exc) from recursion_exc
+            raise _reject_excessive_json_nesting() from recursion_exc
         raise TelemetryValidationError(
             code,
             f"invalid field {location}: {first['msg']}",

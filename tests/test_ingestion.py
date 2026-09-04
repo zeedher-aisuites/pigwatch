@@ -184,6 +184,27 @@ async def test_deep_json_rejection_retains_exact_bounded_evidence_and_hash() -> 
 
 
 @pytest.mark.asyncio
+async def test_pydantic_nesting_rejection_persists_stable_code_and_exact_evidence() -> None:
+    repository = MemoryObservationRepository()
+    processor = TelemetryProcessor(repository, clock=lambda: INGEST_TIME)
+    envelope = load_observation_fixture("synthetic-live")
+    base = serialize_observation(envelope)
+    nested = b'{"value":' * 220 + b"0" + b"}" * 220
+    raw = base[:-1] + b',"extra":' + nested + b"}"
+
+    result = await processor.process(route_for(envelope).topic(), raw)
+
+    assert result.status is ProcessingStatus.REJECTED
+    assert result.rejection_code is RejectionCode.JSON_NESTING_TOO_DEEP
+    assert len(repository.rejections) == 1
+    assert repository.rejections[0].code is RejectionCode.JSON_NESTING_TOO_DEEP
+    assert repository.rejections[0].raw_message == raw
+    assert len(repository.rejections[0].raw_message) <= 65_536
+    assert repository.rejections[0].raw_sha256 == hashlib.sha256(raw).hexdigest()
+    assert repository.rejections[0].raw_truncated is False
+
+
+@pytest.mark.asyncio
 async def test_topic_mismatch_is_rejected_without_fabricating_identity() -> None:
     repository = MemoryObservationRepository()
     processor = TelemetryProcessor(repository, clock=lambda: INGEST_TIME)

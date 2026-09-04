@@ -5,8 +5,15 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
-from pigwatch_schemas import PayloadType, SourceDelivery, SourceOrigin, serialize_observation
+from pigwatch_schemas import (
+    ObservationEnvelopeV1,
+    PayloadType,
+    SourceDelivery,
+    SourceOrigin,
+    serialize_observation,
+)
 from pigwatch_telemetry import (
     ObservationCategory,
     RejectionCode,
@@ -208,6 +215,43 @@ def test_excessive_json_nesting_is_a_controlled_rejection(raw: bytes) -> None:
         decode_observation(raw)
 
     assert raised.value.code is RejectionCode.JSON_NESTING_TOO_DEEP
+
+
+@pytest.mark.parametrize(
+    "nested",
+    [
+        b"[" * 220 + b"0" + b"]" * 220,
+        b'{"value":' * 220 + b"0" + b"}" * 220,
+    ],
+    ids=["arrays", "objects"],
+)
+def test_pydantic_parser_recursion_is_classified_as_excessive_nesting(
+    nested: bytes,
+) -> None:
+    base = json.dumps(fixture_data(), separators=(",", ":")).encode()
+    raw = base[:-1] + b',"extra":' + nested + b"}"
+
+    # The standard decoder succeeds, proving this exercises Pydantic's lower parser ceiling.
+    assert isinstance(json.loads(raw), dict)
+    with pytest.raises(ValidationError) as pydantic_error:
+        ObservationEnvelopeV1.model_validate_json(raw, strict=True)
+    first = pydantic_error.value.errors(include_url=False)[0]
+    assert first["type"] == "json_invalid"
+    assert first["ctx"]["error"].startswith("recursion limit exceeded")
+
+    with pytest.raises(TelemetryValidationError) as raised:
+        decode_observation(raw)
+    assert raised.value.code is RejectionCode.JSON_NESTING_TOO_DEEP
+
+
+def test_ordinary_pydantic_structural_error_remains_structurally_invalid() -> None:
+    base = json.dumps(fixture_data(), separators=(",", ":")).encode()
+    raw = base[:-1] + b',"extra":{"value":0}}'
+
+    with pytest.raises(TelemetryValidationError) as raised:
+        decode_observation(raw)
+
+    assert raised.value.code is RejectionCode.STRUCTURALLY_INVALID
 
 
 @pytest.mark.parametrize(
