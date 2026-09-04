@@ -8,9 +8,10 @@ M0 established boundaries and development tooling. M1 adds typed observation tra
 validation, MQTT ingestion, PostgreSQL persistence and minimal retrieval. M2 adds deterministic
 synthetic environmental sources that use that accepted path. M3 adds a read-only operator dashboard
 over the M1 API with system status, bounded telemetry presentation, factual freshness, filtering,
-detail, and discrete historical visualization. These milestones intentionally contain no animal
-behavior or physiology, simulation ground truth ingestion, vision pipeline, Digital Farm rendering,
-anomaly engine, alerting, prediction or veterinary retrieval behavior.
+detail, and discrete historical visualization. M4 adds a browser-rendered deterministic development
+farm whose local placement configuration joins to that same telemetry by exact source ID. These
+milestones intentionally contain no animal behavior or physiology, simulation ground truth
+ingestion, vision pipeline, anomaly engine, alerting, prediction or veterinary retrieval behavior.
 
 ## System boundary and architecture style
 
@@ -24,7 +25,7 @@ PigWatch begins as a modular monolith in a monorepo. Clear package and service s
 
 | Component | Responsibility | Location |
 | --- | --- | --- |
-| Dashboard | React/TypeScript read-only M3 telemetry view; browser Digital Farm arrives in M4 | `apps/dashboard` |
+| Dashboard | React/TypeScript read-only telemetry view and M4 browser Digital Farm | `apps/dashboard` |
 | API | FastAPI health/retrieval boundary and in-process telemetry worker | `services/api` |
 | Shared schemas | Versioned, transport-neutral vocabulary and provenance | `packages/python/pigwatch-schemas` |
 | Source contracts | Lifecycle shared by source adapters without universal acquisition semantics | `packages/python/pigwatch-sources` |
@@ -111,6 +112,27 @@ single source/measurement/unit series; exact values remain in the table. No infe
 threshold, anomaly, health, spatial, 3D, or M4 behavior exists. Exact behavior is specified in
 [`docs/specs/m3-basic-dashboard.md`](docs/specs/m3-basic-dashboard.md).
 
+## M4 Interactive Digital Farm
+
+M4 extends the existing browser shell with a Digital Farm view while retaining the complete M3
+telemetry console. One M3 `useTelemetry` hook remains the data owner. A bounded frontend derivation
+joins the latest matching observation to each configured marker by exact `source_id`; the 3D scene
+does not fetch, subscribe to MQTT, query PostgreSQL, or mutate observation evidence.
+
+The deterministic development layout lives only under `apps/dashboard/src/digital-farm`. It maps
+the three existing M2 source identities to descriptive Pen A, Pen B, and Service Aisle placements in
+meters. This compile-time configuration is presentation metadata—not an API, persisted model,
+shared schema, survey, or future compatibility promise—so M4 adds no durable spatial contract and
+requires no new ADR. A future cross-service or persistent facility model requires Product Owner
+review and a dedicated ADR.
+
+Three.js and React Three Fiber render procedural farm geometry in a lazy browser chunk with a
+demand-based frame loop and constrained OrbitControls. The semantic sensor directory and factual
+selection detail remain outside WebGL and usable through the keyboard. WebGL unsupported, context
+loss, lazy loading, render failure, missing telemetry, and unplaced telemetry are explicit. Exact
+behavior, camera, performance, accessibility, and lifecycle requirements are specified in
+[`docs/specs/m4-interactive-digital-farm.md`](docs/specs/m4-interactive-digital-farm.md).
+
 ## Source provenance
 
 Every source descriptor declares two orthogonal dimensions:
@@ -168,7 +190,11 @@ Deterministic validation, normalization, rules, statistical methods, and purpose
 
 ## Browser-based Digital Farm
 
-The initial Digital Farm will be part of the browser experience using React, TypeScript, Three.js, and React Three Fiber. This keeps simulation visualization close to the dashboard and avoids a second engine and deployment toolchain. It still consumes stable APIs/contracts rather than becoming the simulator's source of truth. Godot and Unreal Engine are possible future tools only if measured browser limitations justify them; neither is a current dependency or roadmap milestone.
+The initial Digital Farm is part of the browser experience using React, TypeScript, Three.js, and
+React Three Fiber. This keeps simulation visualization close to the dashboard and avoids a second
+engine and deployment toolchain. It consumes the accepted M1 API through M3 state rather than
+becoming the simulator's source of truth. Godot and Unreal Engine are possible future tools only if
+measured browser limitations justify them; neither is a current dependency or roadmap milestone.
 
 ## Future hardware integration
 
@@ -187,7 +213,8 @@ Live device integrations implement the same capability contracts as synthetic so
 - Quality: Ruff, mypy, the TypeScript compiler, and frontend linting when the source surface warrants it.
 - CI: GitHub Actions.
 
-OpenCV, PyTorch, Three.js, React Three Fiber, hardware SDKs, and external AI/alert integrations are intentionally absent from M0 dependencies.
+OpenCV, PyTorch, hardware SDKs, and external AI/alert integrations remain absent. Three.js and React
+Three Fiber are introduced only for the M4 browser presentation accepted by ADR-0004.
 
 ## Cross-cutting constraints and governance
 

@@ -160,7 +160,9 @@ loaded only when the Digital Farm view is active and WebGL is available. Renderi
 frames through React Three Fiber. There is no ornamental animation loop.
 
 The scene uses only owned procedural geometries/materials and no remote models, textures, scripts,
-or runtime assets. React unmount disposes the renderer scene resources it owns. The controls effect
+or runtime assets. The small bounded renderer preserves its drawing buffer so demand-rendered
+frames remain available to browser capture and visual QA without introducing continuous rendering.
+React unmount disposes the renderer scene resources it owns. The controls effect
 removes its change listener and calls `dispose()`. Context-loss listeners are installed in an
 effect and removed on cleanup. Suspense/error boundaries and stable component ownership prevent a
 failed render or React StrictMode probe from leaving a duplicate canvas, listener, control, or
