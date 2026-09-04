@@ -309,7 +309,8 @@ describe("M3 dashboard", () => {
     const user = userEvent.setup();
 
     render(<App client={resolvedClient([recorded])} now={fixedNow} />);
-    await user.click(await screen.findByRole("button", { name: /Inspect observation/ }));
+    const inspect = await screen.findByRole("button", { name: /Inspect observation/ });
+    await user.click(inspect);
 
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText(recorded.envelope.event_id)).toBeTruthy();
@@ -320,6 +321,7 @@ describe("M3 dashboard", () => {
 
     await user.click(within(dialog).getByRole("button", { name: "Close observation detail" }));
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(inspect);
   });
 
   it("marks replay time as not applicable for live delivery and restores trigger focus", async () => {
@@ -339,7 +341,7 @@ describe("M3 dashboard", () => {
     expect(document.activeElement).toBe(inspect);
   });
 
-  it("contains modal focus, protects the background, locks scrolling, and closes from its backdrop", async () => {
+  it("contains modal focus and restores the trigger after a complete backdrop pointer sequence", async () => {
     const user = userEvent.setup();
 
     render(<App client={resolvedClient([makeObservation()])} now={fixedNow} />);
@@ -359,9 +361,32 @@ describe("M3 dashboard", () => {
     inspect.focus();
     expect(document.activeElement).toBe(close);
 
-    fireEvent.mouseDown(document.querySelector(".dialog-backdrop") as HTMLElement);
+    const backdrop = document.querySelector(".dialog-backdrop") as HTMLElement;
+    await user.pointer([
+      { target: backdrop },
+      { keys: "[MouseLeft>]", target: backdrop },
+    ]);
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(document.activeElement).toBe(close);
+
+    await user.pointer({ keys: "[/MouseLeft]", target: backdrop });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.body.style.overflow).toBe("");
+    expect(document.activeElement).toBe(inspect);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(background?.hasAttribute("inert")).toBe(false);
+    expect(background?.hasAttribute("aria-hidden")).toBe(false);
+
+    await user.click(inspect);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    const reopenedBackdrop = document.querySelector(".dialog-backdrop") as HTMLElement;
+    await user.pointer([
+      { keys: "[TouchA>]", target: reopenedBackdrop },
+      { keys: "[/TouchA]", target: reopenedBackdrop },
+    ]);
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(inspect);
   });
 

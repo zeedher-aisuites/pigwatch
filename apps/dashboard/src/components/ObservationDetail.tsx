@@ -84,7 +84,12 @@ export function ObservationDetail({
     <div
       className="dialog-backdrop"
       role="presentation"
-      onMouseDown={(event) => {
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) {
+          event.preventDefault();
+        }
+      }}
+      onClick={(event) => {
         if (event.target === event.currentTarget) {
           onClose();
         }
