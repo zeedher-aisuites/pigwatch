@@ -3,9 +3,8 @@
 ## Status
 
 Implementation specification for M1. The architecture decisions introduced here are recorded in
-[ADR-0005](../adr/0005-telemetry-contract-delivery-and-storage.md), which is conceptually approved
-by the Product Owner but remains `Proposed` until the final implementation fixes pass independent
-verification.
+[ADR-0005](../adr/0005-telemetry-contract-delivery-and-storage.md), which the Product Owner accepted
+after final independent verification.
 
 ## Purpose
 

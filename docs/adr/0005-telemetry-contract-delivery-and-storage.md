@@ -1,6 +1,6 @@
 # ADR-0005: Telemetry contract, delivery and storage
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-02
 - Owners: PigWatch maintainers
 
@@ -110,8 +110,7 @@ versioned contracts, migrations and explicit architecture review.
 
 ## Follow-up
 
-- The Product Owner has approved this decision conceptually. Keep it `Proposed` until the final M1
-  implementation fixes pass independent verification.
+- The Product Owner accepted this decision after final independent M1 verification.
 - Define production authentication, TLS, authorization, evidence retention, backup and recovery
   before any non-local deployment.
 - Reassess a durable producer outbox or edge buffer when real source reliability requirements are
