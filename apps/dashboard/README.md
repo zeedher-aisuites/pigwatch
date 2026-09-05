@@ -55,6 +55,13 @@ The sensor directory and factual detail are always normal HTML. They remain usab
 unsupported, hidden with **Use list only**, context-lost, or unable to render. Unplaced API sources
 remain in the M3 Telemetry view.
 
+The procedural scene uses a bounded site perimeter, separated neutral zone surfaces, graphite structure,
+light-responsive materials, and category-colored sensor heads. Selection adds high-contrast rings and a
+scale treatment without assigning safe/danger meaning to any color.
+
+Canvas sizing is scoped to `.farm-scene__canvas`. Overlay controls must not be included in that selector:
+making the circular north indicator fill the scene would place its translucent surface over the farm.
+
 The layout types and validation are an M4-local development contract only. They are not exported,
 persisted, or promised to later milestones, so M4 does not introduce a new shared spatial schema or
 ADR. A persistent or cross-service facility model needs a future architecture decision.
@@ -75,8 +82,8 @@ The validated production build produces a 74.77 KiB gzip initial application chu
 increase from the 70.42 KiB M3 base, and a 246.13 KiB gzip lazy 3D chunk. The canonical scene stays
 below 12,000 triangles, 45 draw calls, and four lights by construction; pixel ratio is capped at
 1.5 and `frameloop="demand"` avoids idle rendering.
-The small scene preserves its WebGL drawing buffer for reliable visual QA and screenshot capture;
-this does not schedule frames while the view is idle.
+The normal browser-composited canvas is used for visual QA and screenshots; the product renderer
+does not retain its drawing buffer solely for capture.
 
 ## Configuration
 

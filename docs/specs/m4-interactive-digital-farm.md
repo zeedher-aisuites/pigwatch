@@ -144,7 +144,7 @@ states that replay time is not applicable. No diagnosis or threshold text is add
 ## Navigation, camera, and reset
 
 The perspective camera uses a deterministic 38-degree field of view, 0.1 m near plane, 150 m far
-plane, initial position `(24, 20, 28)`, and target `(0, 0, 0)`. OrbitControls provides orbit, pan,
+plane, initial position `(28, 23, 32)`, and target `(0, 1, 0)`. OrbitControls provides orbit, pan,
 and wheel/pinch zoom without free-fly movement. Distance is constrained to 18–58 m, polar angle to
 0.35–1.45 radians, and the target to the configured site vicinity so ordinary navigation cannot
 lose the farm or clip through its floor.
@@ -160,8 +160,12 @@ loaded only when the Digital Farm view is active and WebGL is available. Renderi
 frames through React Three Fiber. There is no ornamental animation loop.
 
 The scene uses only owned procedural geometries/materials and no remote models, textures, scripts,
-or runtime assets. The small bounded renderer preserves its drawing buffer so demand-rendered
-frames remain available to browser capture and visual QA without introducing continuous rendering.
+or runtime assets. A bounded site-perimeter curb, separated zone surfaces, light-responsive
+industrial materials, two lights, and one bounded 1024-pixel shadow map provide readable depth
+without fog, postprocessing, or a large decorative ground plane. Browser capture uses the normal
+composited canvas; product rendering does not preserve its drawing buffer solely for visual QA.
+Canvas sizing targets the dedicated scene class rather than every child `div`, keeping the circular
+north indicator and zone key at their intended overlay sizes instead of covering the rendered farm.
 React unmount disposes the renderer scene resources it owns. The controls effect
 removes its change listener and calls `dispose()`. Context-loss listeners are installed in an
 effect and removed on cleanup. Suspense/error boundaries and stable component ownership prevent a
