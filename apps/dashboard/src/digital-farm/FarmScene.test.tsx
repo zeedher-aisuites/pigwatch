@@ -11,6 +11,7 @@ const sceneMocks = vi.hoisted(() => ({
   },
   renderer: { domElement: null as unknown as HTMLCanvasElement },
   invalidate: vi.fn(),
+  canvasProps: null as Record<string, unknown> | null,
   controls: [] as Array<{
     addEventListener: ReturnType<typeof vi.fn>;
     removeEventListener: ReturnType<typeof vi.fn>;
@@ -21,7 +22,10 @@ const sceneMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@react-three/fiber", () => ({
-  Canvas: () => null,
+  Canvas: (props: Record<string, unknown>) => {
+    sceneMocks.canvasProps = props;
+    return null;
+  },
   useThree: () => ({
     camera: sceneMocks.camera,
     gl: sceneMocks.renderer,
@@ -52,17 +56,44 @@ vi.mock("three/examples/jsm/controls/OrbitControls.js", () => ({
   },
 }));
 
-import { CameraController, ContextLifecycle } from "./FarmScene";
+import { CameraController, ContextLifecycle, FarmScene } from "./FarmScene";
 
 beforeEach(() => {
   sceneMocks.camera.position.fromArray.mockClear();
   sceneMocks.camera.lookAt.mockClear();
   sceneMocks.invalidate.mockClear();
   sceneMocks.controls.length = 0;
+  sceneMocks.canvasProps = null;
   sceneMocks.renderer.domElement = document.createElement("canvas");
 });
 
 describe("FarmScene resource lifecycle", () => {
+  it("keeps the corrected scene demand-rendered with bounded rendering settings", () => {
+    render(
+      <FarmScene
+        layout={DEVELOPMENT_FARM_LAYOUT}
+        selectedSourceId="sim-temperature-1"
+        availableSourceIds={new Set()}
+        onSelectSource={vi.fn()}
+        onContextLost={vi.fn()}
+        resetToken={0}
+      />,
+    );
+
+    expect(sceneMocks.canvasProps).toMatchObject({
+      className: "farm-scene__canvas",
+      frameloop: "demand",
+      dpr: [1, 1.5],
+      shadows: true,
+      gl: {
+        antialias: true,
+        alpha: false,
+        powerPreference: "high-performance",
+      },
+    });
+    expect(sceneMocks.canvasProps?.gl).not.toHaveProperty("preserveDrawingBuffer");
+  });
+
   it("detaches controls and context listeners under StrictMode mount/unmount", () => {
     const addListener = vi.spyOn(sceneMocks.renderer.domElement, "addEventListener");
     const removeListener = vi.spyOn(sceneMocks.renderer.domElement, "removeEventListener");
