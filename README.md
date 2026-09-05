@@ -2,16 +2,17 @@
 
 PigWatch is a simulation-first livestock health monitoring platform. It is designed to detect and communicate physiological and behavioral anomalies; it is not an autonomous veterinary diagnostic system.
 
-This repository contains the **M3 basic dashboard** on top of the closed M0 foundation, accepted M1
-telemetry core, and closed M2 simulator. Deterministic synthetic temperature, relative-humidity,
-and NH3 observations travel through MQTT ingestion into PostgreSQL, are retrieved through the API,
-and appear in a read-only operator dashboard with explicit provenance. Computer vision, anomaly
+This repository contains the **M4 Interactive Digital Farm** on top of the closed M0–M3 milestones.
+Deterministic synthetic temperature, relative-humidity, and NH3 observations travel through MQTT
+ingestion into PostgreSQL, are retrieved through the API, and appear in a read-only operator
+dashboard with explicit provenance. M4 maps the three development source IDs to a local,
+deterministic browser farm without adding placement to telemetry. Computer vision, anomaly
 detection, alerts, analytics, animal behavior, and hardware integrations belong to later milestones.
 
 ## Repository layout
 
 ```text
-apps/dashboard/          React + TypeScript read-only telemetry dashboard
+apps/dashboard/          React + TypeScript telemetry dashboard and browser Digital Farm
 services/api/            FastAPI service and health endpoints
 packages/python/         Shared schemas, source contracts, telemetry, and future package seams
 configs/                 Versioned local simulator configuration
@@ -122,7 +123,7 @@ complete command contract.
 See [`docs/specs/m2-sensor-simulator.md`](docs/specs/m2-sensor-simulator.md) for determinism,
 lifecycle, scheduling, provenance, failure, and retry semantics.
 
-## M3 operator dashboard
+## M3 operator dashboard and M4 Digital Farm
 
 Start the full dependency/API/dashboard stack, wait for readiness, and then run the M2 development
 simulator in another terminal:
@@ -133,11 +134,18 @@ curl --fail http://127.0.0.1:8000/health/ready
 uv run pigwatch-simulator --config configs/simulator.development.json
 ```
 
-Open `http://127.0.0.1:5173`. The dashboard shows API/ingestion dependency state, a factual summary
+Open `http://127.0.0.1:5173`. The Telemetry view shows API/ingestion dependency state, a factual summary
 of the newest 200 observations, latest readings per source and measurement, separate origin and
 delivery provenance, loaded-window filters, discrete historical points, and observation detail.
 The default ten-second polling cycle never overlaps and the 60-second stale indication is a
 dashboard freshness policy—not a biological threshold.
+
+Choose **Digital Farm** in the application header to open the deterministic development layout.
+The farm places `sim-temperature-1`, `sim-humidity-1`, and `sim-nh3-1` in Pen A, Pen B, and the
+Service Aisle. Select a 3D marker or keyboard-accessible sensor card to inspect its latest factual
+API observation. Drag to orbit, right-drag to pan, use the wheel or pinch to zoom, and use **Reset
+camera** to restore the canonical view. The complete sensor directory remains usable if WebGL is
+unsupported, hidden, context-lost, or fails.
 
 Dashboard build-time values are documented in [`.env.example`](.env.example) and
 [`apps/dashboard/README.md`](apps/dashboard/README.md). The browser reads only the PigWatch API; it
@@ -145,9 +153,10 @@ does not connect to PostgreSQL or MQTT.
 
 See [`docs/specs/m3-basic-dashboard.md`](docs/specs/m3-basic-dashboard.md) and
 [`docs/known-limitations/m3.md`](docs/known-limitations/m3.md) for the complete contract and limits.
-
-The initial Digital Farm is planned for M4 as a browser feature built with React, TypeScript,
-Three.js, and React Three Fiber. No 3D engine dependency or rendering behavior is included in M3.
+The M4 contract and limitations are in
+[`docs/specs/m4-interactive-digital-farm.md`](docs/specs/m4-interactive-digital-farm.md) and
+[`docs/known-limitations/m4.md`](docs/known-limitations/m4.md). Its placement configuration is local
+to `apps/dashboard/src/digital-farm/layout.ts`; it is not a shared or persisted facility schema.
 
 ## Product guardrail
 
@@ -156,6 +165,7 @@ PigWatch outputs must be framed as observations, anomaly indications, and decisi
 ## Roadmap
 
 M0 established tooling and boundaries, M1 implements the accepted telemetry core, M2 adds the
-environmental simulator, and M3 adds its read-only telemetry dashboard. The remaining milestone
+environmental simulator, M3 adds its read-only telemetry dashboard, and M4 adds the spatial
+development view. The remaining milestone
 sequence lives in
 [docs/product/roadmap.md](docs/product/roadmap.md).
